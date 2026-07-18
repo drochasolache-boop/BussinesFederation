@@ -494,20 +494,84 @@ function mergeCatalogOnBoot(remote, local, remoteColors, localColors, remoteLoad
   const localData = local ? normalizeCatalogData({ ...empty, ...local }) : empty;
   const localHas = catalogHasContent(localData);
 
-  // Si la carga remota respondió, Sheets manda aunque esté vacío — no restaurar caché local encima
+  // Si la carga remota respondió, Sheets manda en conflictos — PERO no perdemos
+  // flujos locales que el remoto no tiene y que no están borrados (tombstone). Así,
+  // si el Sheet quedó vacío o incompleto, el flujo en caché se conserva y se re-sube
+  // en vez de desaparecer. Los borrados (deletedIds remoto) sí se respetan.
   if (remoteLoaded) {
+    const remoteProcIds = new Set(remoteData.processes.map((p) => p.id));
+    const remoteDeleted = new Set((remoteData.deletedIds || []).map((d) => d.id));
+    const localExtraProcs = localData.processes.filter(
+      (p) => !remoteProcIds.has(p.id) && !remoteDeleted.has(p.id),
+    );
+    if (!localExtraProcs.length) {
+      return {
+        data: remoteData,
+        areaColors: mergeAreaColors(remoteColors, localColors),
+        restoredLocal: false,
+      };
+    }
+    const extraProcIds = new Set(localExtraProcs.map((p) => p.id));
+    const localExtraSources = localData.sources.filter((s) => extraProcIds.has(s.processId));
+    const extraSourceIds = new Set(localExtraSources.map((s) => s.id));
+    const unioned = normalizeCatalogData({
+      areas: [...remoteData.areas, ...localData.areas],
+      processes: [...remoteData.processes, ...localExtraProcs],
+      steps: [...remoteData.steps, ...localData.steps.filter((s) => extraProcIds.has(s.processId))],
+      sources: [...remoteData.sources, ...localExtraSources],
+      fields: [...remoteData.fields, ...localData.fields.filter((f) => extraSourceIds.has(f.sourceId))],
+      roles: [...remoteData.roles, ...localData.roles.filter((r) => extraProcIds.has(r.processId))],
+      dataCatalogs: remoteData.dataCatalogs,
+      catalogColumns: remoteData.catalogColumns,
+      catalogRows: remoteData.catalogRows,
+      deletedIds: remoteData.deletedIds || [],
+    });
     return {
-      data: remoteData,
+      data: unioned,
       areaColors: mergeAreaColors(remoteColors, localColors),
+      restoredLocal: true,
     };
   }
   if (localHas) {
     return {
       data: localData,
       areaColors: localColors || {},
+      restoredLocal: false,
     };
   }
-  return { data: remoteData, areaColors: remoteColors || {} };
+  return { data: remoteData, areaColors: remoteColors || {}, restoredLocal: false };
+}
+
+// PARADIGMA: el push NO sobrescribe el catálogo remoto. Fusiona: los procesos que
+// tiene el cliente local mandan (él los edita), pero los procesos que solo existen en
+// remoto (de otros usuarios) se conservan. Los borrados (deletedIds) se unen. Así dos
+// usuarios editando flujos distintos no se pisan y ambos coexisten en el Sheet.
+function mergeCatalogsForPush(local, remote) {
+  const l = normalizeCatalogData(local || {});
+  const r = normalizeCatalogData(remote || {});
+  const localProcIds = new Set(l.processes.map((p) => p.id));
+  const localDeleted = new Set((l.deletedIds || []).map((d) => d.id));
+
+  // Procesos que solo existen en remoto (de otros) y que localmente NO se borraron.
+  const remoteExtraProcs = r.processes.filter(
+    (p) => !localProcIds.has(p.id) && !localDeleted.has(p.id),
+  );
+  const extraProcIds = new Set(remoteExtraProcs.map((p) => p.id));
+  const remoteExtraSources = r.sources.filter((s) => extraProcIds.has(s.processId));
+  const extraSourceIds = new Set(remoteExtraSources.map((s) => s.id));
+
+  return normalizeCatalogData({
+    areas: [...l.areas, ...r.areas], // dedupe conserva la primera (local manda)
+    processes: [...l.processes, ...remoteExtraProcs],
+    steps: [...l.steps, ...r.steps.filter((s) => extraProcIds.has(s.processId))],
+    sources: [...l.sources, ...remoteExtraSources],
+    fields: [...l.fields, ...r.fields.filter((f) => extraSourceIds.has(f.sourceId))],
+    roles: [...l.roles, ...r.roles.filter((rr) => extraProcIds.has(rr.processId))],
+    dataCatalogs: [...l.dataCatalogs, ...r.dataCatalogs],
+    catalogColumns: [...l.catalogColumns, ...r.catalogColumns],
+    catalogRows: [...l.catalogRows, ...r.catalogRows],
+    deletedIds: [...(l.deletedIds || []), ...(r.deletedIds || [])],
+  });
 }
 
 function normalizeCatalogData(raw) {
@@ -4601,35 +4665,38 @@ export default function App() {
     });
   }, [cancelPendingRemotePush, persistTenantSnapshot]);
 
-  const runSyncPush = useCallback(async () => {
+  const runSyncPush = useCallback(async (force = false) => {
     const tenant = getTenant(activeTenantRef.current);
     if (!tenant.sheetsUrl) return;
-    if (!allowRemotePushRef.current) return;
+    if (!force && !allowRemotePushRef.current) return;
     if (syncInFlightRef.current) return;
     syncInFlightRef.current = true;
 
+    // FUSIÓN no destructiva: mezclamos lo local con lo remoto (conservando procesos
+    // de otros usuarios) antes de escribir. Así ningún push borra el flujo del otro.
     const remote = await loadFromSheets(tenant.sheetsUrl, tenant.defaultTheme);
-    if (remote) {
-      const remoteMax = maxProcessLastModified(remote.data.processes);
-      const localMax = maxProcessLastModified(dataRef.current.processes);
-      if (remoteMax && localMax && remoteMax > localMax) {
-        applyRemoteCatalog(remote, activeTenantRef.current, tenant.defaultTheme);
-        syncInFlightRef.current = false;
-        return;
-      }
-    }
+    const merged = remote ? mergeCatalogsForPush(dataRef.current, remote.data) : normalizeCatalogData(dataRef.current);
 
     const result = await syncToSheets(
-      dataRef.current, areaColorsRef.current, themeRef.current, tenant.sheetsUrl,
+      merged, areaColorsRef.current, themeRef.current, tenant.sheetsUrl,
     );
     syncInFlightRef.current = false;
     if (result?.ok) {
       pendingSyncRef.current = false;
       allowRemotePushRef.current = false;
-      lastRemoteModifiedRef.current = maxProcessLastModified(dataRef.current.processes);
+      // El local ahora refleja la fusión (incluye los flujos de otros usuarios).
+      const revision = catalogRevisionFingerprint(merged);
+      if (revision !== catalogRevisionRef.current) {
+        catalogRevisionRef.current = revision;
+        setData(merged);
+        persistTenantSnapshot(activeTenantRef.current, {
+          data: merged, areaColors: areaColorsRef.current, theme: themeRef.current,
+        });
+      }
+      lastRemoteModifiedRef.current = maxProcessLastModified(merged.processes);
     }
     if (pendingSyncRef.current) runSyncPush();
-  }, [applyRemoteCatalog]);
+  }, [applyRemoteCatalog, persistTenantSnapshot]);
 
   const scheduleSyncPush = useCallback(() => {
     if (!allowRemotePushRef.current) return;
@@ -4784,7 +4851,9 @@ export default function App() {
       remoteHydratedRef.current = true;
       catalogRevisionRef.current = catalogRevisionFingerprint(merged.data);
     }
-    allowRemotePushRef.current = false;
+    // Si el arranque restauró flujos locales que faltaban en el remoto, hay que
+    // re-subirlos para que el otro usuario los vea (si no, quedan solo en caché).
+    allowRemotePushRef.current = !!merged.restoredLocal;
     const resolvedTheme = fromSheets?.theme || localTheme || tenant.defaultTheme;
     setData(merged.data);
     setAreaColors(merged.areaColors);
@@ -6244,12 +6313,24 @@ function Capture({
     saveProcessCapture(payload, procId, deletedIds);
     skipMergeRef.current = true;
     skipEditBumpRef.current = true;
-    setSteps((s) => s.map((st) => ({
-      ...st,
-      persistedId: tmpToStepId[st.tmpId] || st.persistedId,
-      persistedSourceId: tmpToSourceId[st.tmpId] || st.persistedSourceId,
-      persistedOrder: tmpToOrder[st.tmpId] ?? st.persistedOrder,
-    })));
+    // Solo re-escribir steps si algún persistedId/sourceId/orden cambió realmente.
+    // Si no, evitamos un setSteps con arrays nuevos que re-armaría el timer de
+    // autosave en bucle (y mantendría skipMergeRef casi siempre activo, bloqueando
+    // la reconciliación de cambios remotos).
+    const needsIdSync = steps.some((st) =>
+      (tmpToStepId[st.tmpId] && tmpToStepId[st.tmpId] !== st.persistedId)
+      || (tmpToSourceId[st.tmpId] && tmpToSourceId[st.tmpId] !== st.persistedSourceId)
+      || (tmpToOrder[st.tmpId] != null && tmpToOrder[st.tmpId] !== st.persistedOrder));
+    if (needsIdSync) {
+      setSteps((s) => s.map((st) => ({
+        ...st,
+        persistedId: tmpToStepId[st.tmpId] || st.persistedId,
+        persistedSourceId: tmpToSourceId[st.tmpId] || st.persistedSourceId,
+        persistedOrder: tmpToOrder[st.tmpId] ?? st.persistedOrder,
+      })));
+    } else {
+      skipMergeRef.current = false;
+    }
     lastPublishedGenRef.current = localEditGenRef.current;
     lastLocalPublishTsRef.current = Date.now();
     setLiveSyncAt(new Date().toISOString());
@@ -6307,8 +6388,11 @@ function Capture({
   useEffect(() => {
     if (!editingId || !draftHydrated) return;
     if (skipMergeRef.current) {
+      // Saltamos ESTE ciclo (fue nuestro propio publish), pero NO tocamos
+      // lastRemoteStructureRef: si el setData en realidad vino de un applyRemoteCatalog
+      // con cambios de otro usuario, marcar aquí la estructura remota bloquearía la
+      // reconciliación para siempre. Dejarlo permite que el siguiente ciclo la aplique.
       skipMergeRef.current = false;
-      lastRemoteStructureRef.current = processStructureFingerprint(data, editingId);
       return;
     }
     const fp = processStructureFingerprint(data, editingId);
