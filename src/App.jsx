@@ -96,6 +96,36 @@ function catalogIsLocalNewer(localData, remoteData) {
   return !!(localMax && remoteMax && localMax > remoteMax);
 }
 
+// ¿El remoto trae pasos o procesos que localmente no existen (contenido aditivo)?
+// Ignora ids ya borrados localmente para no resucitar tombstones. Un cambio aditivo
+// se puede reconciliar siempre sin destruir trabajo local (reconcile hace union),
+// por eso rompe el empate de timestamps entre dos usuarios editando el mismo flujo.
+function remoteHasNewContent(localData, remoteData) {
+  if (!remoteData) return false;
+  const localDeleted = new Set((localData?.deletedIds || []).map((d) => d.id));
+  const localStepIds = new Set((localData?.steps || []).map((s) => s.id));
+  const hasNewStep = (remoteData.steps || []).some(
+    (s) => s.id && !localStepIds.has(s.id) && !localDeleted.has(s.id),
+  );
+  if (hasNewStep) return true;
+  const localProcIds = new Set((localData?.processes || []).map((p) => p.id));
+  return (remoteData.processes || []).some(
+    (p) => p.id && !localProcIds.has(p.id) && !localDeleted.has(p.id),
+  );
+}
+
+// ¿El remoto marcó como borrado (tombstone) algo que localmente todavía se muestra?
+// Señal confiable de eliminación remota: no se dispara con adiciones locales pendientes
+// (esas no están en el deletedIds remoto). Fuerza jalar para que el borrado se vea.
+function remoteDroppedLocalContent(localData, remoteData) {
+  if (!remoteData) return false;
+  const remoteDeleted = new Set((remoteData.deletedIds || []).map((d) => d.id));
+  if (!remoteDeleted.size) return false;
+  const localStepHit = (localData?.steps || []).some((s) => remoteDeleted.has(s.id));
+  if (localStepHit) return true;
+  return (localData?.processes || []).some((p) => remoteDeleted.has(p.id));
+}
+
 function formatDraftTime(iso) {
   if (!iso) return "";
   try {
@@ -284,7 +314,7 @@ const SEED_AREA_COLORS = ["#4285F4", "#34A853", "#FBBC04", "#EA4335", "#A142F4",
 // ============================================================================
 // ENTORNOS — cada empresa con su Google Sheet y branding
 // ============================================================================
-const DACOMSA_SHEETS_URL = "https://script.google.com/macros/s/AKfycbxEzZD8gt14X3-AfHExDn-9q2jPCWowAI4p95F9YiCJMbsjsDQtEAqZxxUW4M9bdQJHsw/exec";
+const DACOMSA_SHEETS_URL = "https://script.google.com/macros/s/AKfycbzMtytRCehBoJngJPiTvD7IbPBjsENOZXa8H5ZgBGkesqXJRTk1fOfTvhYCDeTSPB01Yg/exec";
 
 const TENANTS = [
   {
@@ -418,19 +448,37 @@ function catalogHasContent(catalog) {
   );
 }
 
+function safeParseDate(str) {
+  if (!str) return 0;
+  let parsed = Date.parse(str);
+  if (!Number.isNaN(parsed)) return parsed;
+  // Soporte para DD/MM/YYYY HH:MM:SS
+  const ddmmyyyyMatch = str.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})\s*(\d{1,2})?:?(\d{2})?:?(\d{2})?$/);
+  if (ddmmyyyyMatch) {
+    const [, d, m, y, hr = 0, min = 0, sec = 0] = ddmmyyyyMatch;
+    return new Date(y, m - 1, d, hr, min, sec).getTime();
+  }
+  // Soporte para YYYY-MM-DD HH:MM:SS
+  const yyyymmddMatch = str.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})\s*(\d{1,2})?:?(\d{2})?:?(\d{2})?$/);
+  if (yyyymmddMatch) {
+    const [, y, m, d, hr = 0, min = 0, sec = 0] = yyyymmddMatch;
+    return new Date(y, m - 1, d, hr, min, sec).getTime();
+  }
+  return 0;
+}
+
 function maxProcessLastModified(processes) {
   let max = 0;
   (processes || []).forEach((p) => {
-    const ts = Date.parse(p.lastModified || "");
-    if (!Number.isNaN(ts) && ts > max) max = ts;
+    const ts = safeParseDate(p.lastModified || "");
+    if (ts > max) max = ts;
   });
   return max || null;
 }
 
 function processLastModifiedTs(catalogData, processId) {
   const proc = catalogData?.processes?.find((p) => p.id === processId);
-  const ts = Date.parse(proc?.lastModified || "");
-  return Number.isNaN(ts) ? 0 : ts;
+  return safeParseDate(proc?.lastModified || "");
 }
 
 function mergeAreaColors(...maps) {
@@ -463,15 +511,19 @@ function mergeCatalogOnBoot(remote, local, remoteColors, localColors, remoteLoad
 }
 
 function normalizeCatalogData(raw) {
-  const areas = dedupeAreas(raw.areas || []);
+  const deletedIds = dedupeById(raw.deletedIds || []).map((d) => ({ id: String(d.id || "") }));
+  const deletedSet = new Set(deletedIds.map((d) => d.id).filter(Boolean));
+
+  const areas = dedupeAreas(raw.areas || []).filter((a) => !deletedSet.has(a.id));
   const areaIds = new Set(areas.map((a) => a.id));
-  const processes = dedupeById(raw.processes || []).filter((p) => !p.areaId || areaIds.has(p.areaId));
+  const processes = dedupeById(raw.processes || [])
+    .filter((p) => (!p.areaId || areaIds.has(p.areaId)) && !deletedSet.has(p.id));
   const processIds = new Set(processes.map((p) => p.id));
-  const steps = dedupeById(raw.steps || []).filter((s) => processIds.has(s.processId));
-  const sources = dedupeById(raw.sources || []).filter((s) => processIds.has(s.processId));
+  const steps = dedupeById(raw.steps || []).filter((s) => processIds.has(s.processId) && !deletedSet.has(s.id));
+  const sources = dedupeById(raw.sources || []).filter((s) => processIds.has(s.processId) && !deletedSet.has(s.id));
   const sourceIds = new Set(sources.map((s) => s.id));
-  const fields = dedupeById(raw.fields || []).filter((f) => sourceIds.has(f.sourceId));
-  const roles = dedupeById(raw.roles || []).filter((r) => processIds.has(r.processId));
+  const fields = dedupeById(raw.fields || []).filter((f) => sourceIds.has(f.sourceId) && !deletedSet.has(f.id));
+  const roles = dedupeById(raw.roles || []).filter((r) => processIds.has(r.processId) && !deletedSet.has(r.id));
   const dataCatalogs = dedupeById(raw.dataCatalogs || []).map((c) => ({
     ...c,
     version: Number(c.version) || 1,
@@ -487,7 +539,7 @@ function normalizeCatalogData(raw) {
     }));
   const catalogRows = dedupeById(raw.catalogRows || []).filter((r) => catalogIds.has(r.catalogId))
     .map((r) => ({ ...r, values: r.values && typeof r.values === "object" ? r.values : {} }));
-  return { areas, processes, steps, sources, fields, roles, dataCatalogs, catalogColumns, catalogRows };
+  return { areas, processes, steps, sources, fields, roles, dataCatalogs, catalogColumns, catalogRows, deletedIds };
 }
 
 function parseSheetsToData(rows) {
@@ -628,10 +680,15 @@ function parseSheetsToData(rows) {
     };
   }).filter((r) => r.id && r.catalogId);
 
+  const deletedIds = (rows.deletedIds || []).map((d) => ({
+    id: String(d.id || ""),
+  })).filter((d) => d.id);
+
   return normalizeCatalogData({
     areas, processes,
     steps: resolveStepTreeMetadata(steps),
     sources, fields, roles, dataCatalogs, catalogColumns, catalogRows,
+    deletedIds,
   });
 }
 
@@ -1138,6 +1195,7 @@ async function syncToSheets(data, areaColors, theme, sheetsUrl) {
     areas: [], processes: [], steps: [], sources: [], fields: [], roles: [],
     dataCatalogs: [], catalogColumns: [], catalogRows: [],
     configuracion: themeToConfigRows(theme || DEFAULT_THEME),
+    deletedIds: [],
   };
 
   clean.areas.forEach((a) => rows.areas.push({
@@ -1216,6 +1274,9 @@ async function syncToSheets(data, areaColors, theme, sheetsUrl) {
       id: r.id, catalogo: catalogById[r.catalogId] || "",
       orden: r.order ?? 0, valores: JSON.stringify(r.values || {}),
     });
+  });
+  clean.deletedIds.forEach((d) => {
+    rows.deletedIds.push({ id: d.id });
   });
 
   const body = JSON.stringify(rows);
@@ -4631,10 +4692,24 @@ export default function App() {
     const prevRevision = catalogRevisionRef.current;
 
     if (prevRevision && revision !== prevRevision) {
-      const pushPending = pendingSyncRef.current || syncInFlightRef.current || allowRemotePushRef.current;
-      if (pushPending) return;
-      if (catalogIsLocalNewer(dataRef.current, fromSheets.data)) return;
-      if (captureCollabRef.current.pendingLocal) return;
+      // Si el remoto trae pasos/procesos nuevos, reconciliamos siempre (union seguro):
+      // así el empate de timestamps entre dos editores del mismo flujo no impide ver
+      // los pasos que agregó el otro. Solo esperamos si hay un push literalmente en curso.
+      const additive = remoteHasNewContent(dataRef.current, fromSheets.data)
+        || remoteDroppedLocalContent(dataRef.current, fromSheets.data);
+      if (!additive) {
+        const pushPending = pendingSyncRef.current || syncInFlightRef.current || allowRemotePushRef.current;
+        if (pushPending) return;
+        if (catalogIsLocalNewer(dataRef.current, fromSheets.data)) return;
+        if (captureCollabRef.current.pendingLocal) return;
+      } else if (syncInFlightRef.current) {
+        // Solo esperamos si hay un request de push literalmente en vuelo (para no leer
+        // un estado a medio escribir). NO bloqueamos por push encolado: el autosave se
+        // re-arma solo y dejaría pendingSync casi siempre activo, impidiendo ver
+        // adiciones/eliminaciones del otro usuario. Reconcile + efecto dedicado +
+        // filtro de tombstones en publishWorkingCopy preservan el trabajo local.
+        return;
+      }
       catalogRevisionRef.current = revision;
       applyRemoteCatalog(fromSheets, tenant.id, tenant.defaultTheme);
       setRemoteUpdateNotice(null);
@@ -4904,7 +4979,7 @@ export default function App() {
     );
   }
 
-  const saveProcessCapture = (payload, replaceProcessId) => {
+  const saveProcessCapture = (payload, replaceProcessId, deletedIds = []) => {
     markCatalogEdited();
     setData((d) => {
       let base = d;
@@ -4921,6 +4996,10 @@ export default function App() {
           roles: base.roles.filter((r) => r.processId !== replaceProcessId),
         };
       }
+      const newDeletedIds = [
+        ...(base.deletedIds || []),
+        ...deletedIds.map((id) => ({ id })),
+      ];
       return {
         ...base,
         processes: [...base.processes, payload.process],
@@ -4928,6 +5007,7 @@ export default function App() {
         sources: [...base.sources, ...payload.sources],
         fields: [...base.fields, ...payload.fields],
         roles: [...base.roles, ...payload.roles],
+        deletedIds: newDeletedIds,
       };
     });
   };
@@ -4949,7 +5029,29 @@ export default function App() {
   const addSource = (s) => { markCatalogEdited(); const id = uid(); setData((d) => ({ ...d, sources: [...d.sources, { id, ...s }] })); return id; };
   const addField = (f) => { markCatalogEdited(); setData((d) => ({ ...d, fields: [...d.fields, { id: uid(), ...f }] })); };
   const addRole = (r) => { markCatalogEdited(); setData((d) => ({ ...d, roles: [...d.roles, { id: uid(), ...r }] })); };
-  const del = (coll, id) => { markCatalogEdited(); setData((d) => ({ ...d, [coll]: d[coll].filter((x) => x.id !== id) })); };
+  const del = (coll, id) => {
+    markCatalogEdited();
+    setData((d) => {
+      // Tombstone: registra el id borrado (y su cascada) en deletedIds para que
+      // la eliminación se sincronice y NO reaparezca desde otra sesión.
+      const tombstones = new Set([id]);
+      if (coll === "processes") {
+        d.steps.forEach((s) => { if (s.processId === id) tombstones.add(s.id); });
+        const procSourceIds = new Set(
+          d.sources.filter((s) => s.processId === id).map((s) => s.id),
+        );
+        procSourceIds.forEach((sid) => tombstones.add(sid));
+        d.fields.forEach((f) => { if (procSourceIds.has(f.sourceId)) tombstones.add(f.id); });
+        d.roles.forEach((r) => { if (r.processId === id) tombstones.add(r.id); });
+      }
+      const existing = new Set((d.deletedIds || []).map((x) => x.id));
+      const newDeleted = [
+        ...(d.deletedIds || []),
+        ...[...tombstones].filter((tid) => tid && !existing.has(tid)).map((tid) => ({ id: tid })),
+      ];
+      return { ...d, [coll]: d[coll].filter((x) => x.id !== id), deletedIds: newDeleted };
+    });
+  };
   const bulkMerge = (payload) => { markCatalogEdited(); setData((d) => normalizeCatalogData({
     ...d,
     areas: [...d.areas, ...payload.areas],
@@ -5916,8 +6018,11 @@ function reconcileCaptureWithCatalog(catalogData, processId, steps, fields, step
   const remoteTs = processLastModifiedTs(catalogData, processId);
   const localPublishTs = opts.localPublishTs || 0;
   const keepPendingPersisted = localPublishTs > remoteTs;
+  // Nunca re-agregar un paso que ya fue borrado remotamente (tombstone): de lo
+  // contrario la eliminación de otro usuario "revive" desde el estado local.
+  const deletedSet = new Set((catalogData.deletedIds || []).map((d) => d.id));
   const pendingPersisted = keepPendingPersisted
-    ? steps.filter((s) => s.persistedId && !catalogIds.has(s.persistedId))
+    ? steps.filter((s) => s.persistedId && !catalogIds.has(s.persistedId) && !deletedSet.has(s.persistedId))
     : [];
   const pendingTmpIds = new Set([
     ...localTmpIds,
@@ -5974,6 +6079,9 @@ function Capture({
   const localEditGenRef = useRef(0);
   const lastPublishedGenRef = useRef(0);
   const skipEditBumpRef = useRef(false);
+  // true en cuanto el usuario hace algún cambio real en esta sesión de edición.
+  // Sirve para subir la versión una sola vez, automáticamente, al terminar de editar.
+  const sessionDirtyRef = useRef(false);
   const lastLocalPublishTsRef = useRef(0);
   const draftUserEmail = authUser?.email || collabSession?.email || "";
 
@@ -6086,9 +6194,17 @@ function Capture({
       setEditingId(procId);
     }
 
+    // No re-publicar pasos ya borrados remotamente (tombstone): evita que el autosave
+    // "reviva" un paso que otro usuario eliminó, si dispara antes de limpiarlo del form.
+    const tombSet = new Set((data.deletedIds || []).map((d) => d.id));
+    const pubSteps = steps.filter((s) => !(s.persistedId && tombSet.has(s.persistedId)));
+    const pubStepTmpIds = new Set(pubSteps.map((s) => s.tmpId));
+    const pubFields = fields.filter((f) => pubStepTmpIds.has(f.stepTmpId));
+    const pubStepRoles = stepRoles.filter((r) => pubStepTmpIds.has(r.stepTmpId));
+
     const proc = data.processes.find((p) => p.id === procId) || null;
     const { payload, tmpToStepId, tmpToSourceId } = buildCaptureProcessPayload({
-      areaId, subArea, procName, trigger, steps, fields, stepRoles,
+      areaId, subArea, procName, trigger, steps: pubSteps, fields: pubFields, stepRoles: pubStepRoles,
       editingId: procId, editingProc: proc, bumpVersion: false, versionComment: "",
       authUser, collabSession,
     });
@@ -6097,7 +6213,35 @@ function Capture({
       const tmp = Object.entries(tmpToStepId).find(([, id]) => id === s.id)?.[0];
       if (tmp) tmpToOrder[tmp] = s.order;
     });
-    saveProcessCapture(payload, procId);
+
+    const activeProcSteps = data.steps.filter((s) => s.processId === procId);
+    const currentPersistedStepIds = new Set(steps.map((s) => s.persistedId).filter(Boolean));
+    const deletedPersistedStepIds = activeProcSteps
+      .filter((s) => !currentPersistedStepIds.has(s.id))
+      .map((s) => s.id);
+
+    const activeProcSources = data.sources.filter((s) => s.processId === procId);
+    const activeProcSourceIds = new Set(activeProcSources.map((s) => s.id));
+    
+    const activeProcFields = data.fields.filter((f) => activeProcSourceIds.has(f.sourceId));
+    const currentPersistedFieldIds = new Set(fields.map((f) => f.persistedId).filter(Boolean));
+    const deletedPersistedFieldIds = activeProcFields
+      .filter((f) => !currentPersistedFieldIds.has(f.id))
+      .map((f) => f.id);
+
+    const activeProcRoles = data.roles.filter((r) => r.processId === procId);
+    const currentPersistedRoleIds = new Set(stepRoles.map((r) => r.persistedId).filter(Boolean));
+    const deletedPersistedRoleIds = activeProcRoles
+      .filter((r) => !currentPersistedRoleIds.has(r.id))
+      .map((r) => r.id);
+
+    const deletedIds = [
+      ...deletedPersistedStepIds,
+      ...deletedPersistedFieldIds,
+      ...deletedPersistedRoleIds,
+    ];
+
+    saveProcessCapture(payload, procId, deletedIds);
     skipMergeRef.current = true;
     skipEditBumpRef.current = true;
     setSteps((s) => s.map((st) => ({
@@ -6111,7 +6255,7 @@ function Capture({
     setLiveSyncAt(new Date().toISOString());
   }, [
     areaId, procName, steps, fields, stepRoles, editingId, subArea, trigger,
-    data.processes, saveProcessCapture, authUser, collabSession,
+    data, saveProcessCapture, authUser, collabSession,
   ]);
 
   const flushWorkingCopyNow = useCallback(() => {
@@ -6138,11 +6282,15 @@ function Capture({
     }
     if (!steps.length && !fields.length && !stepRoles.length) return;
     localEditGenRef.current += 1;
+    sessionDirtyRef.current = true;
   }, [draftHydrated, steps, fields, stepRoles]);
 
   useEffect(() => {
     if (!draftHydrated || !areaId || !procName.trim()) return;
-    if (!steps.length && !editingId) return;
+    // El flujo nuevo no se sincroniza solo: se publica en el primer «Crear flujo»
+    // (flushWorkingCopyNow). Una vez que existe editingId, todo es transparente.
+    if (!editingId) return;
+    if (!steps.length) return;
     if (workingCopyTimerRef.current) clearTimeout(workingCopyTimerRef.current);
     workingCopyTimerRef.current = setTimeout(() => {
       workingCopyTimerRef.current = null;
@@ -6166,26 +6314,39 @@ function Capture({
     const fp = processStructureFingerprint(data, editingId);
     if (fp === lastRemoteStructureRef.current) return;
 
-    if (localEditGenRef.current > lastPublishedGenRef.current) {
-      const remoteTs = processLastModifiedTs(data, editingId);
-      const hasLocalOnly = steps.some((s) => !s.persistedId);
-      if (hasLocalOnly || lastLocalPublishTsRef.current >= remoteTs) return;
-    }
+    // ¿El remoto agregó pasos a ESTE flujo que aún no tenemos en el formulario?
+    // Si es así, reconciliamos siempre (union seguro que conserva lo local): es el
+    // caso "otro usuario insertó un paso y no lo veo". Solo cuando NO hay pasos
+    // remotos nuevos aplicamos los guards que evitan pisar edición de texto en curso.
+    const remoteStepIdsForProc = new Set(
+      data.steps.filter((s) => s.processId === editingId).map((s) => s.id),
+    );
+    const formPersistedIds = new Set(steps.map((s) => s.persistedId).filter(Boolean));
+    const remoteAddedSteps = [...remoteStepIdsForProc].some((id) => !formPersistedIds.has(id));
+    // ¿Algún paso que tengo en el formulario fue borrado remotamente (tombstone)?
+    const deletedSet = new Set((data.deletedIds || []).map((d) => d.id));
+    const remoteRemovedSteps = steps.some((s) => s.persistedId && deletedSet.has(s.persistedId));
 
-    const hasUnpublished = localEditGenRef.current > lastPublishedGenRef.current;
-    if (hasUnpublished) {
-      const remoteStepIds = new Set(
-        data.steps.filter((s) => s.processId === editingId).map((s) => s.id),
-      );
-      const hasLocalOnly = steps.some((s) => !s.persistedId
-        || (s.persistedId && !remoteStepIds.has(s.persistedId)));
-      if (hasLocalOnly) {
-        if (liveSyncAt) {
-          const remoteTs = processLastModifiedTs(data, editingId);
-          const publishTs = Date.parse(liveSyncAt);
-          if (!Number.isNaN(publishTs) && remoteTs <= publishTs) return;
-        } else {
-          return;
+    if (!remoteAddedSteps && !remoteRemovedSteps) {
+      if (localEditGenRef.current > lastPublishedGenRef.current) {
+        const remoteTs = processLastModifiedTs(data, editingId);
+        const hasLocalOnly = steps.some((s) => !s.persistedId);
+        if (hasLocalOnly || lastLocalPublishTsRef.current >= remoteTs) return;
+      }
+
+      const hasUnpublished = localEditGenRef.current > lastPublishedGenRef.current;
+      if (hasUnpublished) {
+        const remoteStepIds = remoteStepIdsForProc;
+        const hasLocalOnly = steps.some((s) => !s.persistedId
+          || (s.persistedId && !remoteStepIds.has(s.persistedId)));
+        if (hasLocalOnly) {
+          if (liveSyncAt) {
+            const remoteTs = processLastModifiedTs(data, editingId);
+            const publishTs = Date.parse(liveSyncAt);
+            if (!Number.isNaN(publishTs) && remoteTs <= publishTs) return;
+          } else {
+            return;
+          }
         }
       }
     }
@@ -6216,6 +6377,28 @@ function Capture({
       setTimeout(() => setRemoteStepsAdded(0), 4000);
     }
   }, [data, editingId, draftHydrated]);
+
+  // Efecto dedicado y determinista para ELIMINACIONES remotas: independiente de la
+  // maquinaria de merge/skip. Si el catálogo trae un tombstone para un paso que este
+  // formulario todavía muestra, lo quita (y sus campos/roles) y evita re-publicarlo.
+  useEffect(() => {
+    if (!editingId) return;
+    const deletedSet = new Set((data.deletedIds || []).map((d) => d.id));
+    if (!deletedSet.size) return;
+    const removedTmpIds = new Set(
+      steps.filter((s) => s.persistedId && deletedSet.has(s.persistedId)).map((s) => s.tmpId),
+    );
+    if (!removedTmpIds.size) return;
+    skipNextPublishRef.current = true;
+    skipEditBumpRef.current = true;
+    lastPublishedGenRef.current = localEditGenRef.current;
+    setSteps((arr) => arr.filter((s) => !removedTmpIds.has(s.tmpId)));
+    setFields((arr) => arr.filter((f) => !removedTmpIds.has(f.stepTmpId)));
+    setStepRoles((arr) => arr.filter((r) => !removedTmpIds.has(r.stepTmpId)));
+    setSelectedStepTmpId((cur) => (removedTmpIds.has(cur) ? null : cur));
+    setRemoteStepsAdded(-2);
+    setTimeout(() => setRemoteStepsAdded(0), 4000);
+  }, [data, editingId, steps]);
 
   useEffect(() => { initialProcIdRef.current = initialProcId; }, [initialProcId]);
 
@@ -6324,7 +6507,14 @@ function Capture({
   };
 
   const clearForm = async () => {
+    // Al terminar de editar, sube la versión una vez si hubo cambios (transparente).
+    commitVersionIfDirty();
     await releaseHeldLock();
+    if (sheetsUrl && collabApiSupported && sessionId) {
+      releaseSessionLocksRemote(sheetsUrl, sessionId);
+    }
+    heldLockRef.current = null;
+    sessionDirtyRef.current = false;
     setEditingId(null); setAreaId(""); setSubArea(""); setProcName("");
     setTrigger(""); setSteps([]); setFields([]); setStepRoles([]);
     setVersionComment(""); setShowHistory(false); setSelectedStepTmpId(null);
@@ -6445,24 +6635,28 @@ function Capture({
     reader.readAsArrayBuffer(file);
   };
 
-  const save = () => {
-    const editingProcForSave = editingId ? data.processes.find((p) => p.id === editingId) : null;
-    const { payload, processId } = buildCaptureProcessPayload({
-      areaId, subArea, procName, trigger, steps, fields, stepRoles,
-      editingId, editingProc: editingProcForSave, bumpVersion: !!editingId,
-      versionComment, authUser, collabSession,
-      forceNewProcessId: true,
-    });
-
-    saveProcessCapture(payload, editingId || null);
-    if (sheetsUrl && collabApiSupported && sessionId) {
-      releaseSessionLocksRemote(sheetsUrl, sessionId);
-    }
-    heldLockRef.current = null;
-    clearCaptureDraft(tenantId, draftUserEmail);
+  // Primer guardado explícito de un flujo nuevo: lo persiste una vez y deja al
+  // usuario dentro del editor (ya con editingId). A partir de ahí todo es en vivo.
+  const createFlow = () => {
+    flushWorkingCopyNow();
+    sessionDirtyRef.current = false;
     setSaved(true);
-    clearForm();
-    setTimeout(() => setSaved(false), 2200);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  // Sube la versión una sola vez al terminar de editar un flujo existente,
+  // solo si hubo cambios reales en esta sesión. Mantiene el mismo id de proceso.
+  const commitVersionIfDirty = () => {
+    if (!editingId || !sessionDirtyRef.current) return;
+    const editingProcForSave = data.processes.find((p) => p.id === editingId) || null;
+    const { payload } = buildCaptureProcessPayload({
+      areaId, subArea, procName, trigger, steps, fields, stepRoles,
+      editingId, editingProc: editingProcForSave, bumpVersion: true,
+      versionComment, authUser, collabSession,
+    });
+    saveProcessCapture(payload, editingId);
+    sessionDirtyRef.current = false;
+    lastPublishedGenRef.current = localEditGenRef.current;
   };
 
   const processArea = data.areas.find((a) => a.id === areaId);
@@ -6521,10 +6715,22 @@ function Capture({
           : "Icono rama = caminos paralelos · botón «Unir ramas» = punto donde vuelven a juntarse."}
         t={t}
         action={<div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {editingId && <Btn t={t} variant="ghost" onClick={clearForm}>
-            <Plus size={15} /> Nuevo</Btn>}
-          <Btn t={t} onClick={canSave ? save : undefined} disabled={!canSave}>
-            <Check size={16} /> {editingId ? "Guardar v" + (currentVersion + 1) : "Guardar"}</Btn>
+          {editingId ? (
+            <>
+              <span style={{ fontSize: 12, color: t.textFaint, display: "flex", alignItems: "center", gap: 5 }}>
+                <span style={{ width: 7, height: 7, borderRadius: 99, background: "#34A853", boxShadow: "0 0 6px #34A853" }} />
+                {sheetsUrl
+                  ? (liveSyncAt ? "Guardado " + formatRelativeTime(liveSyncAt) : "Guardado automático")
+                  : "Guardado local"}
+              </span>
+              <Btn t={t} variant="ghost" onClick={clearForm}>
+                <Check size={15} /> Terminar</Btn>
+            </>
+          ) : (
+            <Btn t={t} onClick={(canSave && steps.length) ? createFlow : undefined}
+              disabled={!canSave || !steps.length}>
+              <Check size={16} /> Crear flujo</Btn>
+          )}
         </div>} />
 
       {identified && (

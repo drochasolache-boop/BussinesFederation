@@ -611,14 +611,14 @@ h1, h2, h3, h4, h5, h6 {
   margin-top: 1px;
 }
 
-/* Flujo Documentar — acciones al hover */
+/* Flujo Documentar — acciones siempre visibles pero sutiles */
 .flow-card-wrap {
   overflow: visible;
   margin-top: 6px;
 }
 .flow-card-wrap .flow-card-actions {
-  opacity: 0;
-  transition: opacity 0.12s ease;
+  opacity: 0.75;
+  transition: opacity 0.15s ease;
 }
 .flow-card-wrap:hover .flow-card-actions {
   opacity: 1;

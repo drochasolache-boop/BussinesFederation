@@ -161,6 +161,7 @@ function readCatalog(ss) {
     catalogColumns: { name: "ColumnasCatalogo", cols: ["id","catalogo","nombre","tipo","descripcion","productOwner","contexto","valoresPredefinidos","orden","requerido"] },
     catalogRows: { name: "FilasCatalogo", cols: ["id","catalogo","orden","valores"] },
     configuracion: { name: "Configuracion", cols: ["clave","valor"] },
+    deletedIds: { name: "Borrados",      cols: ["id"] },
   };
   var result = {};
   for (var key in sheets) {
@@ -174,17 +175,35 @@ function readCatalog(ss) {
 
 function writeCatalog(data, ss) {
   var spreadsheet = ss || SpreadsheetApp.getActiveSpreadsheet();
+
+  // --- Tombstones monotónicos ---
+  // El catálogo se escribe completo (último que escribe gana). Para que las
+  // ELIMINACIONES no se pierdan cuando un cliente con estado viejo empuja, unimos
+  // el "Borrados" entrante con el existente (nunca se borra un tombstone) y NO
+  // escribimos ninguna fila cuyo id esté tombstoned (evita resurrección).
+  var existingDeleted = readSheetTable(spreadsheet.getSheetByName("Borrados")) || [];
+  var deletedSet = {};
+  var mergedDeleted = [];
+  existingDeleted.concat(data.deletedIds || []).forEach(function(r) {
+    var id = r && r.id != null ? String(r.id) : "";
+    if (id && !deletedSet[id]) { deletedSet[id] = true; mergedDeleted.push({ id: id }); }
+  });
+  function dropDeleted(rows) {
+    return (rows || []).filter(function(r) { return !(r && deletedSet[String(r.id)]); });
+  }
+
   var sheets = {
-    "Áreas":      { data: data.areas,     cols: ["id","nombre","color"] },
-    "Procesos":   { data: data.processes, cols: ["id","area","subArea","nombre","disparador","ejecutores","version","ultimaModificacion"] },
-    "Pasos":      { data: data.steps,     cols: ["id","proceso","area","orden","nombre","areaResponsable","sourceId","transaccion","parentStepId","joinStepId","etiquetaRama","esUnion"] },
-    "Fuentes":    { data: data.sources,   cols: ["id","proceso","tipo","codigo","sistema"] },
-    "Datos":      { data: data.fields,    cols: ["id","sourceId","dato","significado","ejemplo","sensible","transaccion","proceso","area"] },
-    "Roles":      { data: data.roles,     cols: ["id","proceso","stepId","tipo","email","persona"] },
+    "Áreas":      { data: dropDeleted(data.areas),     cols: ["id","nombre","color"] },
+    "Procesos":   { data: dropDeleted(data.processes), cols: ["id","area","subArea","nombre","disparador","ejecutores","version","ultimaModificacion"] },
+    "Pasos":      { data: dropDeleted(data.steps),     cols: ["id","proceso","area","orden","nombre","areaResponsable","sourceId","transaccion","parentStepId","joinStepId","etiquetaRama","esUnion"] },
+    "Fuentes":    { data: dropDeleted(data.sources),   cols: ["id","proceso","tipo","codigo","sistema"] },
+    "Datos":      { data: dropDeleted(data.fields),    cols: ["id","sourceId","dato","significado","ejemplo","sensible","transaccion","proceso","area"] },
+    "Roles":      { data: dropDeleted(data.roles),     cols: ["id","proceso","stepId","tipo","email","persona"] },
     "CatalogosDatos": { data: data.dataCatalogs, cols: ["id","nombre","descripcion","area","ultimaModificacion","version","historialVersiones"] },
     "ColumnasCatalogo": { data: data.catalogColumns, cols: ["id","catalogo","nombre","tipo","descripcion","productOwner","contexto","valoresPredefinidos","orden","requerido"] },
     "FilasCatalogo": { data: data.catalogRows, cols: ["id","catalogo","orden","valores"] },
     "Configuracion": { data: data.configuracion, cols: ["clave","valor"] },
+    "Borrados":   { data: mergedDeleted, cols: ["id"] },
   };
 
   for (var name in sheets) {
