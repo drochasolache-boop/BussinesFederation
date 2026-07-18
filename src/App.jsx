@@ -574,6 +574,35 @@ function mergeCatalogsForPush(local, remote) {
   });
 }
 
+// Al APLICAR lo remoto (poll), lo remoto manda para lo compartido, pero conservamos
+// las CREACIONES locales que aún no están en remoto (áreas/procesos nuevos no borrados),
+// para que no desaparezcan por una actualización de otro usuario. Se re-suben después.
+function mergeRemoteKeepingLocalExtras(local, remote) {
+  const l = normalizeCatalogData(local || {});
+  const r = normalizeCatalogData(remote || {});
+  const remoteAreaIds = new Set(r.areas.map((a) => a.id));
+  const remoteProcIds = new Set(r.processes.map((p) => p.id));
+  const remoteDeleted = new Set((r.deletedIds || []).map((d) => d.id));
+  const extraAreas = l.areas.filter((a) => !remoteAreaIds.has(a.id) && !remoteDeleted.has(a.id));
+  const extraProcs = l.processes.filter((p) => !remoteProcIds.has(p.id) && !remoteDeleted.has(p.id));
+  const extraProcIds = new Set(extraProcs.map((p) => p.id));
+  const extraSources = l.sources.filter((s) => extraProcIds.has(s.processId));
+  const extraSourceIds = new Set(extraSources.map((s) => s.id));
+  const merged = normalizeCatalogData({
+    areas: [...r.areas, ...extraAreas],
+    processes: [...r.processes, ...extraProcs],
+    steps: [...r.steps, ...l.steps.filter((s) => extraProcIds.has(s.processId))],
+    sources: [...r.sources, ...extraSources],
+    fields: [...r.fields, ...l.fields.filter((f) => extraSourceIds.has(f.sourceId))],
+    roles: [...r.roles, ...l.roles.filter((rr) => extraProcIds.has(rr.processId))],
+    dataCatalogs: r.dataCatalogs,
+    catalogColumns: r.catalogColumns,
+    catalogRows: r.catalogRows,
+    deletedIds: [...(l.deletedIds || []), ...(r.deletedIds || [])],
+  });
+  return { merged, hasExtras: extraAreas.length > 0 || extraProcs.length > 0, extraAreaIds: extraAreas.map((a) => a.id) };
+}
+
 function normalizeCatalogData(raw) {
   const deletedIds = dedupeById(raw.deletedIds || []).map((d) => ({ id: String(d.id || "") }));
   const deletedSet = new Set(deletedIds.map((d) => d.id).filter(Boolean));
@@ -4606,6 +4635,9 @@ export default function App() {
   const [areaColors, setAreaColors] = useState({});
   const [view, setView] = useState("dashboard");
   const [captureProcId, setCaptureProcId] = useState(null);
+  // Se incrementa cada vez que se entra a Documentar desde el menú, para volver
+  // siempre a la pantalla de selección (nuevo vs. editar existente).
+  const [captureEntryNonce, setCaptureEntryNonce] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [switchingTenant, setSwitchingTenant] = useState(false);
   const allowRemotePushRef = useRef(false);
@@ -4649,18 +4681,25 @@ export default function App() {
 
   const applyRemoteCatalog = useCallback((fromSheets, tenantId, tenantDefaultTheme) => {
     cancelPendingRemotePush();
-    allowRemotePushRef.current = false;
+    // Conservar creaciones locales aún no subidas (áreas/procesos nuevos) para que no
+    // desaparezcan al aplicar un cambio remoto; se marcan para re-subirse.
+    const { merged, hasExtras, extraAreaIds } = mergeRemoteKeepingLocalExtras(dataRef.current, fromSheets.data);
+    allowRemotePushRef.current = hasExtras;
     remoteHydratedRef.current = true;
-    lastRemoteModifiedRef.current = maxProcessLastModified(fromSheets.data.processes);
-    catalogRevisionRef.current = catalogRevisionFingerprint(fromSheets.data);
-    setData(fromSheets.data);
-    setAreaColors(fromSheets.areaColors);
+    lastRemoteModifiedRef.current = maxProcessLastModified(merged.processes);
+    catalogRevisionRef.current = catalogRevisionFingerprint(merged);
+    const mergedColors = { ...fromSheets.areaColors };
+    extraAreaIds.forEach((id) => {
+      if (areaColorsRef.current[id]) mergedColors[id] = areaColorsRef.current[id];
+    });
+    setData(merged);
+    setAreaColors(mergedColors);
     const resolvedTheme = fromSheets.theme || tenantDefaultTheme;
     setThemeState(resolvedTheme);
     themeRef.current = resolvedTheme;
     persistTenantSnapshot(tenantId, {
-      data: fromSheets.data,
-      areaColors: fromSheets.areaColors,
+      data: merged,
+      areaColors: mergedColors,
       theme: resolvedTheme,
     });
   }, [cancelPendingRemotePush, persistTenantSnapshot]);
@@ -5142,7 +5181,8 @@ export default function App() {
   };
 
   const nav = [
-    { id: "dashboard", label: "Panel", icon: LayoutDashboard },
+    { id: "dashboard", label: "Estatus", icon: LayoutDashboard },
+    { id: "flows", label: "Flujos", icon: GitBranch },
     { id: "graph", label: "Mapa de relaciones", icon: Network },
     { id: "capture", label: "Documentar", icon: Plus },
     { id: "catalogs", label: "Catálogos", icon: FileSpreadsheet },
@@ -5171,7 +5211,10 @@ export default function App() {
         <nav style={{ flex: 1, padding: 8 }}>
           {nav.map((n) => { const Icon = n.icon; const active = view === n.id;
             return (
-              <div key={n.id} onClick={() => setView(n.id)} className={`sidebar-link ${active ? "sidebar-link-active" : ""}`}>
+              <div key={n.id} onClick={() => {
+                  if (n.id === "capture") { setCaptureProcId(null); setCaptureEntryNonce((x) => x + 1); }
+                  setView(n.id);
+                }} className={`sidebar-link ${active ? "sidebar-link-active" : ""}`}>
                 <Icon size={15} /> <span>{n.label}</span></div>
             ); })}
         </nav>
@@ -5251,6 +5294,9 @@ export default function App() {
         )}
         <div style={{ padding: "14px 18px" }}>
           {view === "dashboard" && <Dashboard data={data} t={t} theme={theme} areaColors={areaColors} procColors={procColors} setView={setView} />}
+          {view === "flows" && <FlowsView data={data} t={t} areaColors={areaColors}
+            onOpen={(procId) => { setCaptureProcId(procId); setView("capture"); }}
+            onNew={() => { setCaptureProcId(null); setCaptureEntryNonce((x) => x + 1); setView("capture"); }} />}
           {view === "graph" && (
             <EcosystemExplorer data={data} t={t} areaColors={areaColors} procColors={procColors}
               onEditProcess={(procId) => { setCaptureProcId(procId); setView("capture"); }} />
@@ -5259,6 +5305,7 @@ export default function App() {
             <Capture key={activeTenantId} tenantId={activeTenantId} data={data} t={t} areaColors={areaColors}
               addArea={addArea} setAreaColor={setAreaColor} saveProcessCapture={saveProcessCapture}
               initialProcId={captureProcId} onInitialConsumed={() => setCaptureProcId(null)}
+              entryNonce={captureEntryNonce}
               sheetsUrl={activeTenant.sheetsUrl}
               collabApiSupported={collabApiSupported}
               collabSession={collabSession}
@@ -5323,117 +5370,200 @@ function Ring({ pct, t, size = 108, stroke = 10, color }) {
 }
 
 function Dashboard({ data, t, theme, areaColors, setView }) {
-  const documented = data.fields.filter((f) => (f.description || "").trim()).length;
-  const coverage = data.fields.length ? Math.round((documented / data.fields.length) * 100) : 0;
-  const withOwner = new Set(data.roles.filter((r) => r.type === "owner").map((r) => r.processId));
-  const ownerCov = data.processes.length
-    ? Math.round((data.processes.filter((p) => withOwner.has(p.id)).length / data.processes.length) * 100) : 0;
-  const withSteward = new Set(data.roles.filter((r) => r.type === "steward").map((r) => r.processId));
-  const stewardCov = data.processes.length
-    ? Math.round((data.processes.filter((p) => withSteward.has(p.id)).length / data.processes.length) * 100) : 0;
-  const stepsCov = data.processes.length
-    ? Math.round((data.processes.filter((p) => data.steps.some((s) => s.processId === p.id)).length / data.processes.length) * 100) : 0;
-
-  // Índice de madurez de gobernanza: promedio ponderado de las dimensiones
-  const maturity = Math.round(coverage * 0.3 + ownerCov * 0.3 + stewardCov * 0.2 + stepsCov * 0.2);
-  const maturityLabel = maturity >= 80 ? "Sólida" : maturity >= 55 ? "En consolidación" : maturity >= 30 ? "En desarrollo" : "Inicial";
-  const maturityColor = maturity >= 80 ? "#34A853" : maturity >= 55 ? "var(--primary)" : maturity >= 30 ? "#FBBC04" : "#EA4335";
-
-  const kpis = [
-    { label: "Áreas mapeadas", value: data.areas.length, icon: Boxes },
-    { label: "Procesos", value: data.processes.length, icon: Layers },
-    { label: "Fuentes / transacciones", value: data.sources.length, icon: Database },
-    { label: "Datos catalogados", value: data.fields.length, icon: FileText },
-  ];
-
-  const areaHealth = data.areas.map((a) => {
-    const procs = data.processes.filter((p) => p.areaId === a.id);
-    const withO = procs.filter((p) => withOwner.has(p.id)).length;
-    const pct = procs.length ? Math.round((withO / procs.length) * 100) : 0;
-    return { ...a, procs: procs.length, pct };
-  });
-
   return (
     <div>
-      <Header title="Avance de metas de documentación"
-        sub={`${theme?.companyName || "Empresa"} · un proceso documentado tiene al menos un paso`}
+      <Header title="Estatus de documentación"
+        sub={`${theme?.companyName || "Empresa"} · avance por área hacia las metas`}
         t={t}
         action={<Btn t={t} onClick={() => setView("capture")}><Plus size={16} /> Documentar</Btn>} />
 
-      {/* Primera vista: metas por área */}
       <DocProgress data={data} t={t} areaColors={areaColors} setView={setView} />
+    </div>
+  );
+}
 
-      <GovernancePriorities data={data} t={t} setView={setView} />
+// ============================================================================
+// FLUJOS — portafolio ejecutivo (qué procesos existen y cómo crecen)
+// ============================================================================
+function processFlowStats(processId, data) {
+  const steps = data.steps.filter((s) => s.processId === processId);
+  const childrenByParent = {};
+  steps.forEach((s) => {
+    if (s.isJoinPoint || isJoinStepRecord(s)) return;
+    const key = s.parentStepId || "__root__";
+    (childrenByParent[key] = childrenByParent[key] || []).push(s);
+  });
+  const forks = Object.values(childrenByParent).filter((arr) => arr.length > 1).length;
+  const joins = steps.filter((s) => s.isJoinPoint || isJoinStepRecord(s)).length;
+  return { total: steps.length, forks, joins, branched: forks > 0 };
+}
 
-      {/* KPIs — franja horizontal limpia */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 12 }}>
-        {kpis.map((s) => { const Icon = s.icon; return (
-          <div key={s.label} className="glass-panel" style={{ padding: "12px 14px", borderRadius: 10 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <Icon size={15} color="var(--primary)" />
-              <span style={{ fontSize: 11.5, color: "var(--text-dim)", fontWeight: 500 }}>{s.label}</span>
+function flowDaysSince(iso) {
+  const ts = Date.parse(iso || "");
+  if (Number.isNaN(ts)) return Infinity;
+  return (Date.now() - ts) / 86400000;
+}
+
+// Calcula el layout real del flujo (mismo formato de ramas que arma el usuario):
+// columnas = avance del paso, filas = ramas paralelas; los forks abren carriles y
+// convergen en el nodo de unión (joinTmpId) exactamente donde el usuario lo puso.
+function computeFlowLayout(procSteps) {
+  const tree = persistedStepsToFlowTree(procSteps || []);
+  if (!tree.length) return { nodes: [], edges: [], cols: 0, rows: 0 };
+  const byId = {};
+  tree.forEach((s) => { byId[s.tmpId] = s; });
+  const nodes = [];
+  const edges = [];
+  const placed = new Set();
+  let maxCol = 0, maxRow = 0;
+  const addNode = (id, col, row, kind) => {
+    if (placed.has(id)) return;
+    placed.add(id);
+    nodes.push({ id, col, row, kind });
+    if (col > maxCol) maxCol = col;
+    if (row > maxRow) maxRow = row;
+  };
+  const walk = (startNode, col, row) => {
+    let node = startNode, c = col;
+    let exit = { id: startNode.tmpId, col, row };
+    let guard = 0;
+    while (node && guard++ < 500) {
+      addNode(node.tmpId, c, row, node.isJoinPoint ? "join" : "step");
+      exit = { id: node.tmpId, col: c, row };
+      const kids = treeChildrenOf(tree, node.tmpId);
+      if (kids.length === 0) break;
+      if (kids.length === 1) {
+        edges.push({ from: node.tmpId, to: kids[0].tmpId });
+        node = kids[0]; c += 1; continue;
+      }
+      const joinStep = node.joinTmpId ? byId[node.joinTmpId] : null;
+      let maxExitCol = c;
+      const branchExits = [];
+      kids.forEach((kid, i) => {
+        edges.push({ from: node.tmpId, to: kid.tmpId });
+        const be = walk(kid, c + 1, row + i);
+        branchExits.push(be);
+        if (be.col > maxExitCol) maxExitCol = be.col;
+      });
+      if (joinStep) {
+        const jcol = maxExitCol + 1;
+        addNode(joinStep.tmpId, jcol, row, "join");
+        branchExits.forEach((be) => edges.push({ from: be.id, to: joinStep.tmpId }));
+        node = joinStep; c = jcol; continue;
+      }
+      exit = { id: node.tmpId, col: maxExitCol, row };
+      break;
+    }
+    return exit;
+  };
+  let rootRow = 0;
+  sortFlowRoots(tree).forEach((root) => {
+    walk(root, 0, rootRow);
+    rootRow = maxRow + 2;
+  });
+  return { nodes, edges, cols: maxCol + 1, rows: maxRow + 1 };
+}
+
+// Mini-esquema del flujo con la estructura REAL de ramas y uniones.
+function FlowMiniMap({ procSteps, color, t }) {
+  const { nodes, edges, cols, rows } = computeFlowLayout(procSteps);
+  if (!nodes.length) {
+    return <div style={{ height: 22, display: "flex", alignItems: "center", fontSize: 10.5, color: t.textFaint }}>Sin pasos</div>;
+  }
+  const pad = 6, colW = 30, rowH = 18, r = 4;
+  const W = pad * 2 + (cols - 1) * colW + r * 2;
+  const H = pad * 2 + (rows - 1) * rowH + r * 2;
+  const px = (c) => pad + r + c * colW;
+  const py = (rw) => pad + r + rw * rowH;
+  const nodeById = {};
+  nodes.forEach((n) => { nodeById[n.id] = n; });
+  return (
+    <svg width="100%" viewBox={`0 0 ${W} ${H}`} height={Math.min(H, 96)}
+      preserveAspectRatio="xMinYMid meet" style={{ display: "block" }}>
+      {edges.map((e, i) => {
+        const a = nodeById[e.from], b = nodeById[e.to];
+        if (!a || !b) return null;
+        const x1 = px(a.col), y1 = py(a.row), x2 = px(b.col), y2 = py(b.row);
+        const dx = Math.max((x2 - x1) / 2, 6);
+        return <path key={i} d={`M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`}
+          fill="none" stroke={t.border} strokeWidth="1.5" />;
+      })}
+      {nodes.map((n) => n.kind === "join"
+        ? <rect key={n.id} x={px(n.col) - r} y={py(n.row) - r} width={r * 2} height={r * 2} rx="1.5"
+            fill={color} transform={`rotate(45 ${px(n.col)} ${py(n.row)})`} />
+        : <circle key={n.id} cx={px(n.col)} cy={py(n.row)} r={r} fill={color} />)}
+    </svg>
+  );
+}
+
+function FlowsView({ data, t, areaColors, onOpen, onNew }) {
+  const groups = data.areas.map((a) => ({
+    area: a,
+    procs: data.processes.filter((p) => p.areaId === a.id)
+      .sort((x, y) => (y.lastModified || "").localeCompare(x.lastModified || "")),
+  })).filter((g) => g.procs.length > 0);
+  const orphan = data.processes.filter((p) => !data.areas.some((a) => a.id === p.areaId));
+  if (orphan.length) groups.push({ area: { id: "__none__", name: "Sin área asignada" }, procs: orphan });
+
+  const renderCard = (p) => {
+    const st = processFlowStats(p.id, data);
+    const ac = areaColors[p.areaId] || t.primary;
+    const version = p.version || 1;
+    const growing = st.total > 0 && (version > 1 || flowDaysSince(p.lastModified) <= 14);
+    return (
+      <div key={p.id} className="premium-card interactive-hover" onClick={() => onOpen(p.id)}
+        style={{ padding: 16, cursor: "pointer", display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ width: 9, height: 9, borderRadius: 99, background: ac, flexShrink: 0 }} />
+          <div style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: 600, color: t.text,
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name || "Sin nombre"}</div>
+          {growing ? (
+            <span style={{ fontSize: 10.5, fontWeight: 600, color: "#0B7285", background: "#12B88618",
+              padding: "2px 8px", borderRadius: 99, whiteSpace: "nowrap" }}>▲ v{version}</span>
+          ) : (
+            <span style={{ fontSize: 10.5, fontWeight: 500, color: t.textFaint }}>v{version}</span>
+          )}
+        </div>
+        <FlowMiniMap procSteps={data.steps.filter((s) => s.processId === p.id)} color={ac} t={t} />
+        <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: t.textDim }}>
+          <span>{st.total} paso{st.total === 1 ? "" : "s"}</span>
+          <span style={{ color: t.textFaint }}>·</span>
+          <span>{st.branched ? `${st.forks} bifurcación${st.forks === 1 ? "" : "es"}` : "lineal"}</span>
+          {st.joins > 0 && <><span style={{ color: t.textFaint }}>·</span><span>{st.joins} unión{st.joins === 1 ? "" : "es"}</span></>}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div>
+      <Header title="Flujos — portafolio de procesos"
+        sub="Qué procesos existen y cómo van creciendo · clic para abrir el detalle"
+        t={t}
+        action={<Btn t={t} onClick={onNew}><Plus size={16} /> Nuevo flujo</Btn>} />
+
+      {groups.length === 0 ? (
+        <div className="premium-card" style={{ padding: 28, textAlign: "center", color: t.textFaint, fontSize: 13 }}>
+          Aún no hay flujos documentados. Crea el primero con «Nuevo flujo».
+        </div>
+      ) : groups.map((g) => {
+        const totalSteps = g.procs.reduce((n, p) => n + data.steps.filter((s) => s.processId === p.id).length, 0);
+        const ac = areaColors[g.area.id] || t.primary;
+        return (
+          <div key={g.area.id} style={{ marginBottom: 24 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+              <span style={{ width: 10, height: 10, borderRadius: 99, background: ac, flexShrink: 0 }} />
+              <span style={{ fontSize: 14, fontWeight: 600, color: t.text }}>{g.area.name}</span>
+              <span style={{ fontSize: 11.5, color: t.textFaint, fontWeight: 500 }}>
+                {g.procs.length} proceso{g.procs.length === 1 ? "" : "s"} · {totalSteps} pasos
+              </span>
             </div>
-            <div style={{ fontSize: 22, fontWeight: 600, marginTop: 6, letterSpacing: "-0.03em", fontFamily: "var(--font-display)", color: "var(--text-main)" }}>{s.value}</div>
-          </div>
-        ); })}
-      </div>
-
-      {/* Madurez + barras de cobertura */}
-      <div className="glass-panel" style={{ padding: 14, borderRadius: 10, marginBottom: 12, display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
-          <div style={{ position: "relative" }}>
-            <Ring pct={maturity} t={t} size={76} stroke={8} color={maturityColor} />
-            <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column",
-              alignItems: "center", justifyContent: "center" }}>
-              <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: -0.5, color: "var(--text-main)", fontFamily: "var(--font-display)", lineHeight: 1 }}>{maturity}</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(258px, 1fr))", gap: 12 }}>
+              {g.procs.map(renderCard)}
             </div>
           </div>
-          <div>
-            <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text-dim)", letterSpacing: "0.05em", textTransform: "uppercase", fontFamily: "var(--font-display)" }}>Índice de Madurez</div>
-            <div style={{ marginTop: 4, padding: "3px 9px", borderRadius: 999, background: `${maturityColor}14`,
-              color: maturityColor, fontWeight: 600, fontSize: 11, border: `1px solid ${maturityColor}28`, display: "inline-block" }}>{maturityLabel}</div>
-          </div>
-        </div>
-        <div style={{ flex: 1, minWidth: 180, display: "flex", flexDirection: "column", gap: 8 }}>
-          <MiniBar title="Datos con significado" pct={coverage} t={t} />
-          <MiniBar title="Procesos con dueño" pct={ownerCov} t={t} />
-          <MiniBar title="Procesos con steward" pct={stewardCov} t={t} />
-        </div>
-      </div>
-
-      {/* Preparación para IA + composición de fuentes */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
-        <AiReadiness coverage={coverage} ownerCov={ownerCov} stepsCov={stepsCov} t={t} />
-        <SourceMix data={data} t={t} />
-      </div>
-
-      {/* Salud por área */}
-      <div className="premium-card" style={{ padding: 14 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-          <div style={{ fontSize: 14, fontWeight: 600, fontFamily: "var(--font-display)", color: "var(--text-main)" }}>Salud por área</div>
-          <div onClick={() => setView("graph")} style={{ fontSize: 12, color: "var(--primary)", cursor: "pointer",
-            fontWeight: 500, display: "flex", alignItems: "center", gap: 3 }}>Ver mapa <ChevronRight size={13} /></div>
-        </div>
-        {areaHealth.length === 0 ? <div style={{ color: "var(--text-faint)", fontSize: 12 }}>Aún no hay áreas.</div>
-          : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 10 }}>
-              {areaHealth.map((a) => (
-                <div key={a.id}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                    <span style={{ width: 10, height: 10, borderRadius: 99, background: areaColors[a.id],
-                      boxShadow: `0 0 8px ${areaColors[a.id]}`, flexShrink: 0 }} />
-                    <span style={{ fontSize: 13.5, fontWeight: 600, flex: 1, color: "var(--text-main)" }}>{a.name}</span>
-                    <span style={{ fontSize: 12, color: "var(--text-dim)", fontWeight: 500 }}>{a.procs} proc.</span>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: areaColors[a.id], width: 38,
-                      textAlign: "right", fontFamily: "var(--font-display)" }}>{a.pct}%</span>
-                  </div>
-                  <div style={{ height: 6, background: "var(--surface-alt)", borderRadius: 99, overflow: "hidden" }}>
-                    <div style={{ height: "100%", width: `${a.pct}%`, background: areaColors[a.id],
-                      borderRadius: 99, transition: "width .5s", boxShadow: `0 0 6px ${areaColors[a.id]}33` }} />
-                  </div>
-                </div>
-              ))}
-            </div>}
-      </div>
+        );
+      })}
     </div>
   );
 }
@@ -5479,7 +5609,7 @@ function DocProgress({ data, t, areaColors, setView }) {
           </div>
         </div>
         <div style={{ height: 7, background: "var(--surface-alt)", borderRadius: 99, overflow: "hidden" }}>
-          <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 99, transition: "width .5s", boxShadow: `0 0 10px ${color}55` }} />
+          <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 99, transition: "width .5s" }} />
         </div>
         {total === 0 && (
           <div style={{ marginTop: 14, fontSize: 13.5, color: "var(--text-dim)", display: "flex", alignItems: "center", gap: 8 }}>
@@ -5499,8 +5629,7 @@ function DocProgress({ data, t, areaColors, setView }) {
             return (
               <div key={area.id} className="premium-card" style={{ padding: 18, borderTop: `4px solid ${ac}`, position: 'relative' }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-                  <span style={{ width: 10, height: 10, borderRadius: 99, background: ac,
-                    boxShadow: `0 0 8px ${ac}`, flexShrink: 0 }} />
+                  <span style={{ width: 10, height: 10, borderRadius: 99, background: ac, flexShrink: 0 }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 15, fontWeight: 700, fontFamily: "var(--font-display)", color: "var(--text-main)", overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{area.name}</div>
                     <div style={{ fontSize: 11.5, color: "var(--text-faint)", fontWeight: 500 }}>{done.length} de {procs.length} metas</div>
@@ -5509,7 +5638,7 @@ function DocProgress({ data, t, areaColors, setView }) {
                 </div>
                 <div style={{ height: 6, background: "var(--surface-alt)", borderRadius: 99, overflow: "hidden", marginBottom: 14 }}>
                   <div style={{ height: "100%", width: `${areaPct}%`, background: ac, borderRadius: 99,
-                    transition: "width .5s", boxShadow: `0 0 6px ${ac}33` }} />
+                    transition: "width .5s" }} />
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 200, overflowY: "auto" }}>
                   {procs.map((p) => {
@@ -6113,11 +6242,13 @@ function reconcileCaptureWithCatalog(catalogData, processId, steps, fields, step
 
 function Capture({
   tenantId, data, t, areaColors, addArea, setAreaColor, saveProcessCapture,
-  initialProcId, onInitialConsumed,
+  initialProcId, onInitialConsumed, entryNonce,
   sheetsUrl, collabApiSupported, collabSession, authUser,
   stepLocks, onRefreshLocks, remoteUpdateNotice, onApplyRemoteUpdate, onDismissRemoteUpdate,
   onCaptureCollabState,
 }) {
+  // "chooser" = pantalla de selección (nuevo vs. editar existente); "editor" = formulario.
+  const [mode, setMode] = useState(initialProcId ? "editor" : "chooser");
   const [areaId, setAreaId] = useState("");
   const [subArea, setSubArea] = useState("");
   const [procName, setProcName] = useState("");
@@ -6494,11 +6625,19 @@ function Capture({
   useEffect(() => {
     if (!initialProcId) return;
     loadProcess(initialProcId);
+    setMode("editor");
     onInitialConsumed?.();
     setDraftRestored(false);
     setDraftHydrated(true);
     draftHydratedRef.current = true;
   }, [initialProcId]);
+
+  // Al entrar a Documentar desde el menú, volver siempre a la pantalla de selección.
+  useEffect(() => {
+    if (!entryNonce) return;
+    if (initialProcIdRef.current) return;
+    setMode("chooser");
+  }, [entryNonce]);
 
   useEffect(() => {
     if (initialProcId) return;
@@ -6604,6 +6743,30 @@ function Capture({
     setVersionComment(""); setShowHistory(false); setSelectedStepTmpId(null);
     setDraftRestored(false); setDraftSavedAt(null);
     clearCaptureDraft(tenantId, draftUserEmail);
+    setMode("chooser");
+  };
+
+  // Empieza un flujo nuevo desde cero (limpia cualquier borrador previo).
+  const startNewFlow = async () => {
+    await releaseHeldLock();
+    heldLockRef.current = null;
+    sessionDirtyRef.current = false;
+    setEditingId(null); setAreaId(""); setSubArea(""); setProcName("");
+    setTrigger(""); setSteps([]); setFields([]); setStepRoles([]);
+    setVersionComment(""); setShowHistory(false); setSelectedStepTmpId(null);
+    setDraftRestored(false); setDraftSavedAt(null);
+    clearCaptureDraft(tenantId, draftUserEmail);
+    draftHydratedRef.current = true;
+    setDraftHydrated(true);
+    setMode("editor");
+  };
+
+  // Abre un flujo existente para editarlo.
+  const editExistingFlow = (procId) => {
+    loadProcess(procId);
+    draftHydratedRef.current = true;
+    setDraftHydrated(true);
+    setMode("editor");
   };
 
   const addStepRow = (parentTmpId) => {
@@ -6789,6 +6952,86 @@ function Capture({
     const localTs = editingProc.lastModified || editingProc.updatedAt || "";
     return remoteTs && localTs && remoteTs > localTs;
   })());
+
+  if (mode === "chooser") {
+    const hasDraft = !!(procName.trim() || steps.length);
+    const procList = [...data.processes].sort((a, b) => {
+      const ta = a.lastModified || "", tb = b.lastModified || "";
+      return tb.localeCompare(ta);
+    });
+    return (
+      <div>
+        <Header title="Documentar"
+          sub="Crea un flujo nuevo o continúa editando uno existente."
+          t={t} />
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 18 }}>
+          <div onClick={startNewFlow} className="interactive-hover"
+            style={{ background: t.surfaceSolid, border: `1px solid ${t.primary}55`, borderRadius: 14,
+              padding: 20, cursor: "pointer", display: "flex", gap: 14, alignItems: "center" }}>
+            <div style={{ width: 42, height: 42, borderRadius: 11, background: t.primary + "1a",
+              display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <Plus size={22} color={t.primary} />
+            </div>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 600, color: t.text }}>Crear un flujo nuevo</div>
+              <div style={{ fontSize: 12, color: t.textDim, marginTop: 2 }}>Empieza desde cero un proceso.</div>
+            </div>
+          </div>
+
+          {hasDraft && (
+            <div onClick={() => setMode("editor")} className="interactive-hover"
+              style={{ background: t.surfaceSolid, border: `1px solid ${t.border}`, borderRadius: 14,
+                padding: 20, cursor: "pointer", display: "flex", gap: 14, alignItems: "center" }}>
+              <div style={{ width: 42, height: 42, borderRadius: 11, background: "#F5A62322",
+                display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                <FileText size={20} color="#F5A623" />
+              </div>
+              <div>
+                <div style={{ fontSize: 15, fontWeight: 600, color: t.text }}>Continuar borrador</div>
+                <div style={{ fontSize: 12, color: t.textDim, marginTop: 2 }}>
+                  {procName.trim() || "Sin nombre"} · {steps.length} paso{steps.length === 1 ? "" : "s"}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div style={{ fontSize: 12, fontWeight: 600, color: t.textDim, marginBottom: 10, letterSpacing: "0.02em" }}>
+          EDITAR UN FLUJO EXISTENTE
+        </div>
+        {procList.length === 0 ? (
+          <div style={{ background: t.surfaceSolid, border: `1px dashed ${t.border}`, borderRadius: 12,
+            padding: 24, textAlign: "center", color: t.textFaint, fontSize: 13 }}>
+            Aún no hay flujos documentados. Crea el primero arriba.
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {procList.map((p) => {
+              const area = data.areas.find((a) => a.id === p.areaId);
+              const stepCount = data.steps.filter((s) => s.processId === p.id).length;
+              const areaColor = areaColors[p.areaId] || t.primary;
+              return (
+                <div key={p.id} onClick={() => editExistingFlow(p.id)} className="interactive-hover"
+                  style={{ background: t.surfaceSolid, border: `1px solid ${t.border}`, borderRadius: 11,
+                    padding: "12px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}>
+                  <span style={{ width: 9, height: 9, borderRadius: 99, background: areaColor, flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: t.text, overflow: "hidden",
+                      textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name || "Sin nombre"}</div>
+                    <div style={{ fontSize: 11.5, color: t.textFaint, marginTop: 1 }}>
+                      {area ? area.name : "Sin área"}{p.subArea ? " · " + p.subArea : ""} · {stepCount} paso{stepCount === 1 ? "" : "s"} · v{p.version || 1}
+                    </div>
+                  </div>
+                  <ChevronRight size={16} color={t.textFaint} />
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div>
