@@ -22,17 +22,17 @@
    TEMA — minimalista. Superficies planas, hairlines, sin glows.
    ============================================================ */
 .gov-theme-dark {
-  --bg-app: #0c0d10;
+  --bg-app: #0f1114;
   --bg-grid: transparent;
-  --surface-solid: #141619;
-  --surface-alt: #1a1d22;
-  --surface-glass: #101216;
-  --border-color: rgba(255, 255, 255, 0.07);
-  --border-focus: rgba(66, 133, 244, 0.45);
-  --border-hover: rgba(255, 255, 255, 0.14);
-  --text-main: #eceef1;
-  --text-dim: #9aa0a8;
-  --text-faint: #5b616b;
+  --surface-solid: #181b20;
+  --surface-alt: #20242b;
+  --surface-glass: #14171c;
+  --border-color: rgba(226, 232, 240, 0.09);
+  --border-focus: rgba(148, 163, 184, 0.5);
+  --border-hover: rgba(226, 232, 240, 0.18);
+  --text-main: #e9ebef;
+  --text-dim: #9ba1ac;
+  --text-faint: #5c626d;
   --shadow-sm: none;
   --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.45);
@@ -41,17 +41,17 @@
 }
 
 .gov-theme-light {
-  --bg-app: #fbfbfc;
+  --bg-app: #f5f6f8;
   --bg-grid: transparent;
-  --surface-solid: #ffffff;
-  --surface-alt: #f4f5f7;
-  --surface-glass: #ffffff;
-  --border-color: rgba(17, 24, 39, 0.09);
-  --border-focus: rgba(66, 133, 244, 0.4);
-  --border-hover: rgba(17, 24, 39, 0.18);
-  --text-main: #1a1d21;
-  --text-dim: #5f6368;
-  --text-faint: #9aa0a6;
+  --surface-solid: #fcfcfd;
+  --surface-alt: #edeff3;
+  --surface-glass: #fcfcfd;
+  --border-color: rgba(30, 41, 59, 0.11);
+  --border-focus: rgba(100, 116, 139, 0.5);
+  --border-hover: rgba(30, 41, 59, 0.2);
+  --text-main: #1f2329;
+  --text-dim: #5c6270;
+  --text-faint: #9aa0ab;
   --shadow-sm: none;
   --shadow-md: 0 1px 2px rgba(17, 24, 39, 0.06);
   --shadow-lg: 0 12px 32px rgba(17, 24, 39, 0.10);
@@ -193,7 +193,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 .input-premium:focus {
   border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px rgba(66, 133, 244, 0.12);
+  box-shadow: 0 0 0 3px rgba(120, 132, 150, 0.16);
 }
 .input-premium::placeholder {
   color: var(--text-faint);
@@ -729,7 +729,7 @@ h1, h2, h3, h4, h5, h6 {
   transition: background var(--transition-fast);
 }
 .catalog-cell-input:focus {
-  background: rgba(66, 133, 244, 0.05);
+  background: rgba(120, 132, 150, 0.08);
   outline: 1.5px solid var(--border-focus);
   outline-offset: -2px;
 }

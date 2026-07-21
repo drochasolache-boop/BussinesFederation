@@ -7,6 +7,7 @@ import {
   Trash2, Building2, GitBranch, Palette, ShieldCheck, Download,
   FileSpreadsheet, Eye, Waypoints, GraduationCap,
   RotateCcw, Sparkles, Target, Circle, Flag, AlertTriangle, Pencil, Moon, Sun,   Lock, RefreshCw, LogOut, UserCog,
+  Play, Pause, ChevronLeft, LayoutGrid,
 } from "lucide-react";
 
 // ============================================================================
@@ -314,7 +315,7 @@ const SEED_AREA_COLORS = ["#4285F4", "#34A853", "#FBBC04", "#EA4335", "#A142F4",
 // ============================================================================
 // ENTORNOS — cada empresa con su Google Sheet y branding
 // ============================================================================
-const DACOMSA_SHEETS_URL = "https://script.google.com/macros/s/AKfycbzMtytRCehBoJngJPiTvD7IbPBjsENOZXa8H5ZgBGkesqXJRTk1fOfTvhYCDeTSPB01Yg/exec";
+const DACOMSA_SHEETS_URL = "https://script.google.com/macros/s/AKfycbzp-NY7PnftUfhByWRds5QVYYH7IP8Ax2lvBWs8BdURQOaVpiwAkUjw5S7qcMZeFlW33A/exec";
 
 const TENANTS = [
   {
@@ -325,8 +326,8 @@ const TENANTS = [
       companyName: "Dacomsa",
       logo: "/tenants/dacomsa/logo.svg",
       banner: null,
-      primary: "#4285F4",
-      mode: "dark",
+      primary: "#6B7280",
+      mode: "light",
     },
   },
 ];
@@ -347,7 +348,8 @@ function themeFromConfigRows(configRows, fallback) {
     companyName: map.companyName || map.nombre || fallback.companyName,
     logo: logo || fallback.logo || null,
     banner: banner || fallback.banner || null,
-    primary: map.primary || fallback.primary,
+    // Migra el azul heredado (#4285F4) al acento silver; respeta colores custom.
+    primary: (map.primary && map.primary.toLowerCase() !== "#4285f4") ? map.primary : fallback.primary,
     mode: map.mode === "light" ? "light" : (map.mode || fallback.mode),
   };
 }
@@ -570,6 +572,7 @@ function mergeCatalogsForPush(local, remote) {
     dataCatalogs: [...l.dataCatalogs, ...r.dataCatalogs],
     catalogColumns: [...l.catalogColumns, ...r.catalogColumns],
     catalogRows: [...l.catalogRows, ...r.catalogRows],
+    people: [...r.people, ...l.people],
     deletedIds: [...(l.deletedIds || []), ...(r.deletedIds || [])],
   });
 }
@@ -598,6 +601,7 @@ function mergeRemoteKeepingLocalExtras(local, remote) {
     dataCatalogs: r.dataCatalogs,
     catalogColumns: r.catalogColumns,
     catalogRows: r.catalogRows,
+    people: [...r.people, ...l.people],
     deletedIds: [...(l.deletedIds || []), ...(r.deletedIds || [])],
   });
   return { merged, hasExtras: extraAreas.length > 0 || extraProcs.length > 0, extraAreaIds: extraAreas.map((a) => a.id) };
@@ -632,7 +636,19 @@ function normalizeCatalogData(raw) {
     }));
   const catalogRows = dedupeById(raw.catalogRows || []).filter((r) => catalogIds.has(r.catalogId))
     .map((r) => ({ ...r, values: r.values && typeof r.values === "object" ? r.values : {} }));
-  return { areas, processes, steps, sources, fields, roles, dataCatalogs, catalogColumns, catalogRows, deletedIds };
+  // Personas: directorio de email → nombre + foto. Dedupe por email (última gana).
+  const peopleMap = {};
+  (raw.people || []).forEach((p) => {
+    const email = String(p.email || "").trim().toLowerCase();
+    if (!email) return;
+    peopleMap[email] = {
+      email,
+      name: String(p.name || peopleMap[email]?.name || "").trim(),
+      photoUrl: String(p.photoUrl || peopleMap[email]?.photoUrl || "").trim(),
+    };
+  });
+  const people = Object.values(peopleMap);
+  return { areas, processes, steps, sources, fields, roles, dataCatalogs, catalogColumns, catalogRows, deletedIds, people };
 }
 
 function parseSheetsToData(rows) {
@@ -777,11 +793,17 @@ function parseSheetsToData(rows) {
     id: String(d.id || ""),
   })).filter((d) => d.id);
 
+  const people = (rows.people || []).map((p) => ({
+    email: String(p.email || p.correo || "").trim().toLowerCase(),
+    name: String(p.nombre || p.name || "").trim(),
+    photoUrl: String(p.foto || p.photoUrl || "").trim(),
+  })).filter((p) => p.email);
+
   return normalizeCatalogData({
     areas, processes,
     steps: resolveStepTreeMetadata(steps),
     sources, fields, roles, dataCatalogs, catalogColumns, catalogRows,
-    deletedIds,
+    deletedIds, people,
   });
 }
 
@@ -1288,7 +1310,7 @@ async function syncToSheets(data, areaColors, theme, sheetsUrl) {
     areas: [], processes: [], steps: [], sources: [], fields: [], roles: [],
     dataCatalogs: [], catalogColumns: [], catalogRows: [],
     configuracion: themeToConfigRows(theme || DEFAULT_THEME),
-    deletedIds: [],
+    deletedIds: [], people: [],
   };
 
   clean.areas.forEach((a) => rows.areas.push({
@@ -1371,6 +1393,9 @@ async function syncToSheets(data, areaColors, theme, sheetsUrl) {
   clean.deletedIds.forEach((d) => {
     rows.deletedIds.push({ id: d.id });
   });
+  (clean.people || []).forEach((p) => {
+    rows.people.push({ email: p.email, nombre: p.name || "", foto: p.photoUrl || "" });
+  });
 
   const body = JSON.stringify(rows);
 
@@ -1411,13 +1436,13 @@ function useTheme(theme) {
     const dark = theme.mode === "dark";
     return {
       primary: theme.primary,
-      bg: dark ? "#0E1013" : "#FFFFFF",
-      surfaceSolid: dark ? "#16181D" : "#FFFFFF",
-      surfaceAlt: dark ? "#1C1F26" : "#F1F3F4",
-      border: dark ? "#282C34" : "#E3E5E8",
-      text: dark ? "#E8EAED" : "#202124",
-      textDim: dark ? "#9AA0A6" : "#5F6368",
-      textFaint: dark ? "#5F6570" : "#9AA0A6",
+      bg: dark ? "#0F1114" : "#F5F6F8",
+      surfaceSolid: dark ? "#181B20" : "#FCFCFD",
+      surfaceAlt: dark ? "#20242B" : "#EDEFF3",
+      border: dark ? "#2B303A" : "#DCDFE6",
+      text: dark ? "#E9EBEF" : "#1F2329",
+      textDim: dark ? "#9BA1AC" : "#5C6270",
+      textFaint: dark ? "#5C626D" : "#9AA0AB",
       dark,
     };
   }, [theme]);
@@ -1745,16 +1770,23 @@ function avatarColorForUser(person, email, fallback) {
   return `hsl(${hues[Math.abs(hash) % hues.length]}, 52%, 46%)`;
 }
 
-function UserAvatar({ person, email, roleType, size = 34, t, title }) {
+function UserAvatar({ person, email, roleType, size = 34, t, title, photoUrl }) {
   const initials = getUserInitials(person, email);
   const bg = USER_ROLE_COLORS[roleType] || avatarColorForUser(person, email, t.primary);
-  const tip = title || `${roleType}${person || email ? `: ${person || email}` : ""}`;
+  const tip = title || `${roleType || ""}${person || email ? `: ${person || email}` : ""}`;
+  const common = {
+    width: size, height: size, borderRadius: 99, flexShrink: 0,
+    border: `2px solid ${t.surfaceSolid}`, boxShadow: "0 2px 6px #00000018",
+  };
+  if (photoUrl) {
+    return <img src={photoUrl} alt={tip} title={tip}
+      style={{ ...common, objectFit: "cover", background: t.surfaceAlt }} />;
+  }
   return (
     <div title={tip} style={{
-      width: size, height: size, borderRadius: 99, background: bg, color: "#fff",
+      ...common, background: bg, color: "#fff",
       fontSize: Math.max(10, size * 0.34), fontWeight: 700, display: "flex",
-      alignItems: "center", justifyContent: "center", flexShrink: 0,
-      border: `2px solid ${t.surfaceSolid}`, boxShadow: "0 2px 6px #00000018",
+      alignItems: "center", justifyContent: "center",
     }}>{initials}</div>
   );
 }
@@ -4389,7 +4421,7 @@ function ProcessLevel({ data, t, areaColors, procColors, procId, goBack, onEditP
 
 const EMPTY_DATA = {
   areas: [], processes: [], steps: [], sources: [], fields: [], roles: [],
-  dataCatalogs: [], catalogColumns: [], catalogRows: [],
+  dataCatalogs: [], catalogColumns: [], catalogRows: [], people: [],
 };
 
 function ThemeToggleButton({ theme, t, onToggle }) {
@@ -5132,6 +5164,20 @@ export default function App() {
     return id;
   };
   const setAreaColor = (id, color) => { markCatalogEdited(); setAreaColors((c) => ({ ...c, [id]: color })); };
+  // Actualiza foto/nombre de una persona (directorio Equipos), por email.
+  const setPersonInfo = (email, patch) => {
+    const key = String(email || "").trim().toLowerCase();
+    if (!key) return;
+    markCatalogEdited();
+    setData((d) => {
+      const people = [...(d.people || [])];
+      const idx = people.findIndex((p) => p.email === key);
+      const base = idx >= 0 ? people[idx] : { email: key, name: "", photoUrl: "" };
+      const next = { ...base, ...patch, email: key };
+      if (idx >= 0) people[idx] = next; else people.push(next);
+      return { ...d, people };
+    });
+  };
   const addProcess = (p) => { markCatalogEdited(); const id = uid(); setData((d) => ({ ...d, processes: [...d.processes, { id, ...p }] })); return id; };
   const addStep = (s) => { markCatalogEdited(); const id = uid(); setData((d) => ({ ...d, steps: [...d.steps, { id, ...s }] })); return id; };
   const addSource = (s) => { markCatalogEdited(); const id = uid(); setData((d) => ({ ...d, sources: [...d.sources, { id, ...s }] })); return id; };
@@ -5318,7 +5364,7 @@ export default function App() {
               onCaptureCollabState={handleCaptureCollabState}
             />
           </div>
-          {view === "roles" && <OrgDirectory data={data} t={t} areaColors={areaColors} procColors={procColors} />}
+          {view === "roles" && <OrgDirectory data={data} t={t} areaColors={areaColors} procColors={procColors} setPersonInfo={setPersonInfo} />}
           {view === "catalogs" && <DataCatalogsSection data={data} t={t} areaColors={areaColors} setData={setCatalogData} />}
           {view === "admin" && <Admin data={data} t={t} areaColors={areaColors} addArea={addArea}
             addProcess={addProcess} setAreaColor={setAreaColor} del={del} bulkMerge={bulkMerge}
@@ -5496,7 +5542,374 @@ function FlowMiniMap({ procSteps, color, t }) {
   );
 }
 
+// ============================================================================
+// MODO CINE — presentación a pantalla completa de los flujos (ciclo de operación)
+// ============================================================================
+const CINEMA_CSS = `
+.cine-btn{ background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.14); color:#e7ebf1;
+  width:44px; height:44px; border-radius:99px; display:flex; align-items:center; justify-content:center;
+  cursor:pointer; transition:background .15s, border-color .15s; }
+.cine-btn:hover{ background:rgba(255,255,255,0.13); border-color:rgba(255,255,255,0.3); }
+.cine-btn-lg{ width:58px; height:58px; }
+@keyframes cineNodeIn{ from{opacity:0; transform:scale(.3);} to{opacity:1; transform:scale(1);} }
+@keyframes cineEdgeIn{ to{ stroke-dashoffset:0; } }
+@keyframes cineFadeUp{ from{opacity:0; transform:translateY(10px);} to{opacity:1; transform:translateY(0);} }
+@keyframes cineOrbitSpin{ to{ transform:rotate(360deg); } }
+@keyframes cinePulse{ 0%,100%{ opacity:.45; } 50%{ opacity:1; } }
+@keyframes cineHalo{ 0%,100%{ opacity:.35; r:32; } 50%{ opacity:.75; r:38; } }
+.cine-node-in{ opacity:0; animation:cineNodeIn .55s cubic-bezier(.2,.8,.2,1) forwards; transform-box:fill-box; transform-origin:center; }
+.cine-edge-in{ stroke-dasharray:1; stroke-dashoffset:1; animation:cineEdgeIn .7s ease forwards; }
+.cine-fade-up{ opacity:0; animation:cineFadeUp .6s ease forwards; }
+.cine-orbit-spin{ animation:cineOrbitSpin 70s linear infinite; transform-origin:center; }
+.cine-orbit-node{ opacity:0; animation:cineFadeUp .5s ease forwards; transition:transform .2s; }
+.cine-orbit-node:hover{ transform:translate(-50%,-50%) scale(1.12) !important; }
+.cine-zoom{ transition:transform 1.1s cubic-bezier(.6,.05,.2,1); transform-origin:0 0; }
+.cine-halo{ animation:cineHalo 2.4s ease-in-out infinite; }
+.cine-detail{ animation:cineFadeUp .5s cubic-bezier(.2,.8,.2,1) both;
+  background:linear-gradient(180deg, rgba(20,26,36,0.92), rgba(12,16,24,0.94));
+  border:1px solid rgba(255,255,255,0.1); border-radius:16px; backdrop-filter:blur(12px);
+  box-shadow:0 20px 60px rgba(0,0,0,0.55); }
+.cine-chip{ font-size:11.5px; font-weight:500; padding:3px 10px; border-radius:99px;
+  border:1px solid rgba(255,255,255,0.14); color:#cdd3dd; }
+.cine-dim{ transition:opacity .8s ease; }
+`;
+
+function CinemaParticles({ color }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return undefined;
+    const ctx = canvas.getContext("2d");
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    let w = 0, h = 0, raf = 0;
+    const N = 64;
+    const parts = Array.from({ length: N }, () => ({
+      x: Math.random(), y: Math.random(),
+      vx: (Math.random() - 0.5) * 0.0006, vy: (Math.random() - 0.5) * 0.0006,
+      r: Math.random() * 1.6 + 0.5, a: Math.random() * 0.5 + 0.15,
+    }));
+    const resize = () => {
+      w = canvas.width = canvas.offsetWidth * dpr;
+      h = canvas.height = canvas.offsetHeight * dpr;
+    };
+    resize();
+    window.addEventListener("resize", resize);
+    const draw = () => {
+      ctx.clearRect(0, 0, w, h);
+      for (let i = 0; i < parts.length; i++) {
+        const p = parts[i];
+        p.x += p.vx; p.y += p.vy;
+        if (p.x < 0 || p.x > 1) p.vx *= -1;
+        if (p.y < 0 || p.y > 1) p.vy *= -1;
+        const X = p.x * w, Y = p.y * h;
+        for (let j = i + 1; j < parts.length; j++) {
+          const q = parts[j];
+          const dx = (p.x - q.x) * w, dy = (p.y - q.y) * h;
+          const d2 = dx * dx + dy * dy;
+          const max = 130 * dpr;
+          if (d2 < max * max) {
+            const o = (1 - Math.sqrt(d2) / max) * 0.12;
+            ctx.strokeStyle = `rgba(150,165,190,${o})`;
+            ctx.lineWidth = dpr * 0.6;
+            ctx.beginPath(); ctx.moveTo(X, Y); ctx.lineTo(q.x * w, q.y * h); ctx.stroke();
+          }
+        }
+        ctx.beginPath();
+        ctx.arc(X, Y, p.r * dpr, 0, 7);
+        ctx.fillStyle = `rgba(205,215,235,${p.a})`;
+        ctx.fill();
+      }
+      raf = requestAnimationFrame(draw);
+    };
+    draw();
+    return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", resize); };
+  }, []);
+  return <canvas ref={ref} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }} />;
+}
+
+function CinemaFlow({ proc, data, layout, tour, focus }) {
+  const W = 1280, H = 680, padX = 190, padTop = 170, padBottom = 170;
+  const cols = Math.max(layout.cols, 1), rows = Math.max(layout.rows, 1);
+  const availW = W - padX * 2, availH = H - padTop - padBottom;
+  const colW = cols > 1 ? Math.min(availW / (cols - 1), 300) : 0;
+  const rowH = rows > 1 ? Math.min(availH / (rows - 1), 150) : 0;
+  const contentW = (cols - 1) * colW, contentH = (rows - 1) * rowH;
+  const offX = padX + (availW - contentW) / 2;
+  const offY = padTop + (availH - contentH) / 2;
+  const px = (c) => offX + c * colW;
+  const py = (r) => (rows > 1 ? offY + r * rowH : H / 2 + 10);
+  const nById = {};
+  layout.nodes.forEach((n) => { nById[n.id] = n; });
+  const truncate = (s, n) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+
+  const focusNode = focus >= 0 && tour[focus] ? tour[focus] : null;
+  const scale = focusNode ? 2.4 : 1;
+  const fx = focusNode ? px(focusNode.col) : 0;
+  const fy = focusNode ? py(focusNode.row) : 0;
+  const tx = focusNode ? W / 2 - fx * scale : 0;
+  const ty = focusNode ? H / 2 - fy * scale : 0;
+
+  const detail = (() => {
+    if (!focusNode) return null;
+    const st = proc.steps.find((s) => s.id === focusNode.id);
+    const src = st && st.sourceId ? data.sources.find((s) => s.id === st.sourceId) : null;
+    const fields = src ? data.fields.filter((f) => f.sourceId === src.id) : [];
+    const roles = data.roles.filter((r) => r.stepId === focusNode.id);
+    return { st, src, fields, roles };
+  })();
+
+  return (
+    <div style={{ position: "absolute", inset: 0 }}>
+      {/* Título del proceso (fijo) */}
+      <div style={{ position: "absolute", top: 76, left: 60, zIndex: 3 }} className="cine-fade-up">
+        <div style={{ fontSize: 34, fontWeight: 600, color: "#f4f6fa", letterSpacing: "-0.01em" }}>{truncate(proc.name, 40)}</div>
+        <div style={{ fontSize: 13, letterSpacing: "0.22em", color: proc.color, marginTop: 6, textTransform: "uppercase" }}>
+          {proc.areaName} · {proc.steps.length} pasos
+        </div>
+      </div>
+
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height="100%" preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <filter id="cineGlow" x="-120%" y="-120%" width="340%" height="340%">
+            <feGaussianBlur stdDeviation="9" result="b" />
+            <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
+          </filter>
+        </defs>
+        <g className="cine-zoom" style={{ transform: `translate(${tx}px, ${ty}px) scale(${scale})` }}>
+          {layout.edges.map((e, i) => {
+            const a = nById[e.from], b = nById[e.to];
+            if (!a || !b) return null;
+            const x1 = px(a.col), y1 = py(a.row), x2 = px(b.col), y2 = py(b.row);
+            const dx = Math.max((x2 - x1) / 2, 24);
+            const dim = focusNode && !(a.id === focusNode.id || b.id === focusNode.id);
+            return <path key={i} d={`M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`}
+              fill="none" stroke={proc.color} strokeOpacity={dim ? 0.15 : 0.5} strokeWidth="2" pathLength="1"
+              className={"cine-edge-in cine-dim"} style={{ animationDelay: `${0.3 + a.col * 0.35}s` }} />;
+          })}
+          {layout.nodes.map((n) => {
+            const cx = px(n.col), cy = py(n.row);
+            const nm = (proc.steps.find((s) => s.id === n.id) || {}).name || "";
+            const isFocus = focusNode && n.id === focusNode.id;
+            const dim = focusNode && !isFocus;
+            return (
+              <g key={n.id} className="cine-node-in cine-dim" opacity={dim ? 0.22 : 1}
+                style={{ animationDelay: `${0.35 + n.col * 0.35}s`, transformOrigin: `${cx}px ${cy}px` }}>
+                {isFocus && <circle cx={cx} cy={cy} r="32" fill="none" stroke={proc.color} strokeWidth="2" className="cine-halo" />}
+                {n.kind === "join"
+                  ? <rect x={cx - 13} y={cy - 13} width="26" height="26" rx="4" fill={proc.color}
+                      transform={`rotate(45 ${cx} ${cy})`} filter="url(#cineGlow)" />
+                  : <circle cx={cx} cy={cy} r="16" fill={proc.color} filter="url(#cineGlow)" />}
+                <text x={cx} y={cy + 40} fill="#dfe4ec" fontSize="14" textAnchor="middle" style={{ fontWeight: 500 }}>
+                  {truncate(nm || (n.kind === "join" ? "Unión" : "Paso"), 18)}
+                </text>
+              </g>
+            );
+          })}
+        </g>
+      </svg>
+
+      {/* Tarjeta de detalle del paso enfocado */}
+      {detail && (
+        <div key={focusNode.id} className="cine-detail" style={{ position: "absolute", left: 60, bottom: 130,
+          width: 360, maxWidth: "42vw", padding: "18px 20px", zIndex: 4, color: "#e7ebf1" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+            <span style={{ width: 8, height: 8, borderRadius: 99, background: proc.color, boxShadow: `0 0 10px ${proc.color}` }} />
+            <span style={{ fontSize: 11, letterSpacing: "0.14em", color: "#8a93a1", textTransform: "uppercase" }}>
+              Paso {focus + 1} de {tour.length}{focusNode.kind === "join" ? " · Unión" : ""}
+            </span>
+          </div>
+          <div style={{ fontSize: 21, fontWeight: 600, marginBottom: 12 }}>{detail.st?.name || (focusNode.kind === "join" ? "Unión de ramas" : "Paso")}</div>
+          {detail.src && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+              <span className="cine-chip">{detail.src.kind === "file" ? "Archivo" : "ERP"}: {detail.src.code || "—"}</span>
+              {detail.src.where && <span className="cine-chip">{detail.src.where}</span>}
+            </div>
+          )}
+          {detail.fields.length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 10.5, letterSpacing: "0.1em", color: "#6b7482", textTransform: "uppercase", marginBottom: 5 }}>Datos ({detail.fields.length})</div>
+              <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                {detail.fields.slice(0, 6).map((f) => (
+                  <span key={f.id} style={{ fontSize: 11.5, padding: "3px 9px", borderRadius: 6,
+                    background: f.sensitive ? "rgba(229,58,58,0.16)" : "rgba(255,255,255,0.06)",
+                    color: f.sensitive ? "#ff9a9a" : "#cdd3dd" }}>{f.name || "campo"}{f.sensitive ? " ●" : ""}</span>
+                ))}
+                {detail.fields.length > 6 && <span style={{ fontSize: 11.5, color: "#6b7482", padding: "3px 4px" }}>+{detail.fields.length - 6}</span>}
+              </div>
+            </div>
+          )}
+          {detail.roles.length > 0 && (
+            <div>
+              <div style={{ fontSize: 10.5, letterSpacing: "0.1em", color: "#6b7482", textTransform: "uppercase", marginBottom: 5 }}>Responsables</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                {detail.roles.slice(0, 3).map((r, i) => (
+                  <div key={i} style={{ fontSize: 12.5, color: "#cdd3dd" }}>
+                    <span style={{ color: "#8a93a1" }}>{r.type}: </span>{r.person || r.email || "—"}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {!detail.src && detail.fields.length === 0 && detail.roles.length === 0 && (
+            <div style={{ fontSize: 12.5, color: "#8a93a1" }}>Sin fuente ni responsables documentados en este paso.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CinemaOrbit({ procs, onPick }) {
+  const R = Math.min(250, 120 + procs.length * 14);
+  return (
+    <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ position: "relative", width: R * 2 + 200, height: R * 2 + 200, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <svg width={R * 2 + 200} height={R * 2 + 200} style={{ position: "absolute", inset: 0 }}>
+          <circle className="cine-orbit-spin" cx="50%" cy="50%" r={R} fill="none"
+            stroke="rgba(229,58,58,0.28)" strokeWidth="1.5" strokeDasharray="2 7" />
+          <circle cx="50%" cy="50%" r={R} fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="1" />
+        </svg>
+        <div style={{ textAlign: "center", maxWidth: 260, zIndex: 2 }}>
+          <div style={{ fontSize: 12, letterSpacing: "0.24em", color: "#e53a3a", textTransform: "uppercase" }}>Dacomsa</div>
+          <div style={{ fontSize: 27, fontWeight: 600, marginTop: 8 }}>Ciclo de operación</div>
+          <div style={{ fontSize: 13, color: "#8a93a1", marginTop: 10 }}>{procs.length} proceso{procs.length === 1 ? "" : "s"} · toca uno para reproducir</div>
+        </div>
+        {procs.map((p, i) => {
+          const ang = (i / procs.length) * Math.PI * 2 - Math.PI / 2;
+          const x = Math.cos(ang) * R, y = Math.sin(ang) * R;
+          return (
+            <div key={p.id} onClick={() => onPick(i)} className="cine-orbit-node"
+              style={{ position: "absolute", left: `calc(50% + ${x}px)`, top: `calc(50% + ${y}px)`,
+                transform: "translate(-50%,-50%)", cursor: "pointer", textAlign: "center", width: 130, animationDelay: `${i * 0.05}s` }}>
+              <div style={{ width: 18, height: 18, borderRadius: 99, background: p.color, boxShadow: `0 0 16px ${p.color}`, margin: "0 auto 7px" }} />
+              <div style={{ fontSize: 11.5, color: "#cdd3dd", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
+              <div style={{ fontSize: 9.5, color: "#6b7482", marginTop: 1 }}>{p.steps.length} pasos</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function CinemaMode({ data, areaColors, onClose }) {
+  const procs = useMemo(() => data.processes
+    .filter((p) => data.steps.some((s) => s.processId === p.id))
+    .map((p) => ({
+      ...p,
+      areaName: (data.areas.find((a) => a.id === p.areaId) || {}).name || "Sin área",
+      color: areaColors[p.areaId] || "#e53a3a",
+      steps: data.steps.filter((s) => s.processId === p.id),
+    })), [data, areaColors]);
+
+  const [scene, setScene] = useState("orbit");
+  const [idx, setIdx] = useState(0);
+  const [focus, setFocus] = useState(-1); // -1 = flujo completo; 0..n = paso enfocado
+  const [playing, setPlaying] = useState(true);
+  const rootRef = useRef(null);
+
+  const safeIdx = Math.min(idx, Math.max(procs.length - 1, 0));
+  const cur = procs[safeIdx];
+  const layout = useMemo(() => (cur ? computeFlowLayout(cur.steps) : { nodes: [], edges: [], cols: 0, rows: 0 }), [cur && cur.id]); // eslint-disable-line
+  const tour = useMemo(() => [...layout.nodes].sort((a, b) => a.col - b.col || a.row - b.row), [layout]);
+
+  const gotoProc = useCallback((i) => { setIdx(i); setFocus(-1); }, []);
+
+  // Avanza: primero recorre pasos del flujo, luego pasa al siguiente proceso.
+  const advance = useCallback(() => {
+    setFocus((f) => {
+      if (f < tour.length - 1) return f + 1;
+      setIdx((i) => (i + 1) % procs.length);
+      return -1;
+    });
+  }, [tour.length, procs.length]);
+  const back = useCallback(() => {
+    setFocus((f) => {
+      if (f > -1) return f - 1;
+      setIdx((i) => (i - 1 + procs.length) % procs.length);
+      return -1;
+    });
+  }, [procs.length]);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") { if (scene === "flow") setScene("orbit"); else onClose(); }
+      else if (scene === "flow") {
+        if (e.key === "ArrowRight") advance();
+        else if (e.key === "ArrowLeft") back();
+        else if (e.key === " ") { e.preventDefault(); setPlaying((p) => !p); }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [scene, advance, back, onClose]);
+
+  // Autoplay: da tiempo a la entrada del flujo y luego avanza paso a paso.
+  useEffect(() => {
+    if (!playing || scene !== "flow") return undefined;
+    const delay = focus < 0 ? 2600 : 4200;
+    const timer = setTimeout(advance, delay);
+    return () => clearTimeout(timer);
+  }, [playing, scene, idx, focus, advance]);
+
+  useEffect(() => {
+    const el = rootRef.current;
+    if (el && el.requestFullscreen) el.requestFullscreen().catch(() => {});
+    return () => { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); };
+  }, []);
+
+  if (!procs.length || !cur) return null;
+
+  return (
+    <div ref={rootRef} style={{ position: "fixed", inset: 0, zIndex: 9999, background: "#070a10",
+      color: "#fff", fontFamily: "var(--font-main)", overflow: "hidden" }}>
+      <style>{CINEMA_CSS}</style>
+      <CinemaParticles color={cur.color} />
+      <div style={{ position: "absolute", inset: 0, pointerEvents: "none",
+        background: "radial-gradient(ellipse at center, transparent 52%, rgba(0,0,0,0.62) 100%)" }} />
+
+      <div style={{ position: "absolute", top: 0, left: 0, right: 0, display: "flex", alignItems: "center",
+        justifyContent: "space-between", padding: "20px 30px", zIndex: 5 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ width: 9, height: 9, borderRadius: 99, background: "#e53a3a", boxShadow: "0 0 12px #e53a3a", animation: "cinePulse 2s ease-in-out infinite" }} />
+          <span style={{ fontSize: 12.5, letterSpacing: "0.18em", textTransform: "uppercase", color: "#8a93a1" }}>Modo cine · Ciclo de operación</span>
+        </div>
+        <div onClick={onClose} style={{ cursor: "pointer", color: "#8a93a1", display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+          <X size={18} /> Salir
+        </div>
+      </div>
+
+      {scene === "orbit"
+        ? <CinemaOrbit procs={procs} onPick={(i) => { gotoProc(i); setScene("flow"); }} />
+        : <CinemaFlow proc={cur} data={data} layout={layout} tour={tour} focus={focus} />}
+
+      {scene === "flow" && (
+        <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, display: "flex", flexDirection: "column",
+          alignItems: "center", gap: 14, padding: "0 0 26px", zIndex: 5 }}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "center", maxWidth: "70vw" }}>
+            {procs.map((p, i) => (
+              <span key={p.id} onClick={() => gotoProc(i)} style={{ width: i === safeIdx ? 24 : 7, height: 7,
+                borderRadius: 99, cursor: "pointer", background: i === safeIdx ? cur.color : "#39424f", transition: "all .3s" }} />
+            ))}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+            <button className="cine-btn" onClick={back} title="Anterior (←)"><ChevronLeft size={22} /></button>
+            <button className="cine-btn cine-btn-lg" onClick={() => setPlaying((p) => !p)} title="Reproducir (espacio)">
+              {playing ? <Pause size={22} /> : <Play size={22} />}</button>
+            <button className="cine-btn" onClick={advance} title="Siguiente (→)"><ChevronRight size={22} /></button>
+            <button className="cine-btn" onClick={() => { setScene("orbit"); setFocus(-1); }} title="Ver el ciclo"><LayoutGrid size={19} /></button>
+          </div>
+          <div style={{ fontSize: 11.5, color: "#5c6470", letterSpacing: "0.04em" }}>
+            {focus < 0 ? "Flujo completo" : `Paso ${focus + 1} / ${tour.length}`} · {cur.name}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FlowsView({ data, t, areaColors, onOpen, onNew }) {
+  const [cinema, setCinema] = useState(false);
   const groups = data.areas.map((a) => ({
     area: a,
     procs: data.processes.filter((p) => p.areaId === a.id)
@@ -5540,7 +5953,14 @@ function FlowsView({ data, t, areaColors, onOpen, onNew }) {
       <Header title="Flujos — portafolio de procesos"
         sub="Qué procesos existen y cómo van creciendo · clic para abrir el detalle"
         t={t}
-        action={<Btn t={t} onClick={onNew}><Plus size={16} /> Nuevo flujo</Btn>} />
+        action={<div style={{ display: "flex", gap: 8 }}>
+          {data.processes.length > 0 && (
+            <Btn t={t} variant="ghost" onClick={() => setCinema(true)}><Play size={15} /> Modo cine</Btn>
+          )}
+          <Btn t={t} onClick={onNew}><Plus size={16} /> Nuevo flujo</Btn>
+        </div>} />
+
+      {cinema && <CinemaMode data={data} areaColors={areaColors} onClose={() => setCinema(false)} />}
 
       {groups.length === 0 ? (
         <div className="premium-card" style={{ padding: 28, textAlign: "center", color: t.textFaint, fontSize: 13 }}>
@@ -8655,9 +9075,11 @@ function Admin({ data, t, areaColors, addArea, addProcess, setAreaColor, del, bu
 // ============================================================================
 // DIRECTORIO ORGANIZACIONAL — quién toca qué, con qué sensibilidad
 // ============================================================================
-function OrgDirectory({ data, t, areaColors, procColors }) {
+function OrgDirectory({ data, t, areaColors, procColors, setPersonInfo }) {
   const [q, setQ] = useState("");
   const [expandedUser, setExpandedUser] = useState(null);
+  const peopleInfo = {};
+  (data.people || []).forEach((p) => { peopleInfo[p.email] = p; });
 
   // Construir mapa de usuarios: email → roles, procesos, sensibilidad
   const users = useMemo(() => {
@@ -8667,7 +9089,8 @@ function OrgDirectory({ data, t, areaColors, procColors }) {
     data.roles.forEach((r) => {
       const email = (r.email || r.person || "").trim().toLowerCase();
       if (!email) return;
-      if (!map.has(email)) map.set(email, { email, assignments: [] });
+      if (!map.has(email)) map.set(email, { email, name: "", assignments: [] });
+      if (!map.get(email).name && (r.person || "").trim()) map.get(email).name = r.person.trim();
       const proc = data.processes.find((p) => p.id === r.processId);
       const step = r.stepId ? data.steps.find((s) => s.id === r.stepId) : null;
       const area = proc ? data.areas.find((a) => a.id === proc.areaId) : null;
@@ -8693,7 +9116,8 @@ function OrgDirectory({ data, t, areaColors, procColors }) {
       (p.executors || []).forEach((name) => {
         const email = (name || "").trim().toLowerCase();
         if (!email) return;
-        if (!map.has(email)) map.set(email, { email, assignments: [] });
+        if (!map.has(email)) map.set(email, { email, name: "", assignments: [] });
+        if (!map.get(email).name && name && !name.includes("@")) map.get(email).name = name.trim();
         const already = map.get(email).assignments.some((a) => a.processId === p.id);
         if (!already) {
           const area = data.areas.find((a) => a.id === p.areaId);
@@ -8736,11 +9160,97 @@ function OrgDirectory({ data, t, areaColors, procColors }) {
   const roleColors = { owner: "#4285F4", steward: "#34A853", custodian: "#A142F4", executor: "#9AA0A6" };
   const roleLabels = { owner: "Owner", steward: "Steward", custodian: "Custodian", executor: "Ejecutor" };
 
+  // Agrupar personas por área (una persona puede aparecer en varias áreas).
+  const memberInArea = (u, matchAreaId) => {
+    const inArea = u.assignments.filter((a) => (matchAreaId === "__none__" ? !a.areaId : a.areaId === matchAreaId));
+    return { user: u, roleTypes: [...new Set(inArea.map((a) => a.type))],
+      procCount: new Set(inArea.map((a) => a.processId)).size };
+  };
+  const areaGroups = data.areas
+    .map((area) => ({ area, members: filtered.filter((u) => u.assignments.some((a) => a.areaId === area.id)).map((u) => memberInArea(u, area.id)) }))
+    .filter((g) => g.members.length > 0);
+  const orphan = filtered.filter((u) => u.assignments.some((a) => !a.areaId)).map((u) => memberInArea(u, "__none__"));
+  if (orphan.length) areaGroups.push({ area: { id: "__none__", name: "Sin área asignada" }, members: orphan });
+
+  const renderExpandedDetail = (u) => (
+    <div style={{ padding: "0 4px 6px", marginTop: 6 }}>
+      {setPersonInfo && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <input defaultValue={peopleInfo[u.email]?.name || u.name || ""} placeholder="Nombre para mostrar"
+            onBlur={(e) => setPersonInfo(u.email, { name: e.target.value.trim() })}
+            onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+            style={{ ...inputStyle(t), flex: "0 0 200px", fontSize: 12 }} />
+          <input defaultValue={peopleInfo[u.email]?.photoUrl || ""} placeholder="Foto (pega URL de imagen)"
+            onBlur={(e) => setPersonInfo(u.email, { photoUrl: e.target.value.trim() })}
+            onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+            style={{ ...inputStyle(t), flex: 1, minWidth: 180, fontSize: 12 }} />
+        </div>
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto auto auto", gap: "0", fontSize: 12,
+        border: "1px solid " + t.border, borderRadius: 10, overflow: "hidden" }}>
+        <div style={{ padding: "8px 12px", fontWeight: 600, color: t.textDim, background: t.surfaceAlt }}>Rol</div>
+        <div style={{ padding: "8px 12px", fontWeight: 600, color: t.textDim, background: t.surfaceAlt }}>Proceso / Paso</div>
+        <div style={{ padding: "8px 12px", fontWeight: 600, color: t.textDim, background: t.surfaceAlt }}>Área</div>
+        <div style={{ padding: "8px 12px", fontWeight: 600, color: t.textDim, background: t.surfaceAlt }}>Datos</div>
+        <div style={{ padding: "8px 12px", fontWeight: 600, color: t.textDim, background: t.surfaceAlt }}>Sensibles</div>
+        {u.assignments.map((a, i) => {
+          const rc = roleColors[a.type] || t.textDim;
+          const ac = areaColors[a.areaId] || t.textDim;
+          return (
+            <React.Fragment key={i}>
+              <div style={{ padding: "6px 12px", borderTop: "1px solid " + t.border + "44" }}>
+                <span style={{ fontSize: 11, fontWeight: 600, color: rc, background: rc + "15", padding: "2px 6px", borderRadius: 4 }}>{roleLabels[a.type] || a.type}</span>
+              </div>
+              <div style={{ padding: "6px 12px", borderTop: "1px solid " + t.border + "44" }}>
+                <div style={{ fontWeight: 500, color: t.text }}>{a.processName}</div>
+                {a.stepName && <div style={{ fontSize: 11, color: t.textFaint }}>↳ {a.stepName}</div>}
+              </div>
+              <div style={{ padding: "6px 12px", borderTop: "1px solid " + t.border + "44", display: "flex", alignItems: "center", gap: 5 }}>
+                <span style={{ width: 8, height: 8, borderRadius: 99, background: ac }} />
+                <span style={{ color: t.textDim }}>{a.areaName}</span>
+              </div>
+              <div style={{ padding: "6px 12px", borderTop: "1px solid " + t.border + "44", color: t.textDim, textAlign: "center" }}>{a.totalFields}</div>
+              <div style={{ padding: "6px 12px", borderTop: "1px solid " + t.border + "44", textAlign: "center" }}>
+                {a.sensitiveCount > 0 ? <span style={{ color: "#EA4335", fontWeight: 600 }}>{a.sensitiveCount}</span> : <span style={{ color: t.textFaint }}>—</span>}
+              </div>
+            </React.Fragment>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  const renderMemberCard = (m) => {
+    const u = m.user;
+    const isOpen = expandedUser === u.email;
+    const info = peopleInfo[u.email] || {};
+    const displayName = info.name || u.name || u.email.split("@")[0];
+    return (
+      <div key={u.email} style={{ gridColumn: isOpen ? "1 / -1" : "auto",
+        background: t.surfaceSolid, border: "1px solid " + (isOpen ? t.primary + "55" : t.border), borderRadius: 12 }}>
+        <div onClick={() => setExpandedUser(isOpen ? null : u.email)} className="interactive-hover"
+          style={{ display: "flex", alignItems: "center", gap: 11, padding: "12px 14px", cursor: "pointer" }}>
+          <UserAvatar person={displayName} email={u.email} photoUrl={info.photoUrl} size={38} t={t} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13.5, fontWeight: 600, color: t.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayName}</div>
+            <div style={{ fontSize: 11.5, color: t.textFaint, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.email}</div>
+          </div>
+          <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+            {m.roleTypes.map((rt) => (
+              <span key={rt} style={{ fontSize: 9.5, fontWeight: 600, color: roleColors[rt] || t.textDim,
+                background: (roleColors[rt] || t.textDim) + "18", padding: "2px 6px", borderRadius: 4 }}>{roleLabels[rt] || rt}</span>
+            ))}
+          </div>
+        </div>
+        {isOpen && renderExpandedDetail(u)}
+      </div>
+    );
+  };
+
   return (
     <div>
-      <Header title="Directorio organizacional"
-        sub={"Quién toca qué en tu ecosistema de datos. " + users.length + " personas, " +
-          data.processes.length + " procesos."} t={t}
+      <Header title="Equipos por área"
+        sub={users.length + " personas · toca a alguien para ver qué procesos maneja"} t={t}
         action={<div style={{ position: "relative" }}>
           <Search size={16} color={t.textFaint} style={{ position: "absolute", left: 11, top: 10 }} />
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar persona, proceso o área…"
@@ -8753,99 +9263,21 @@ function OrgDirectory({ data, t, areaColors, procColors }) {
             {q ? "Sin resultados." : "Asigna responsables en cada paso al documentar."}</div>
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {filtered.map((u) => {
-            const isOpen = expandedUser === u.email;
+        <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
+          {areaGroups.map((g) => {
+            const ac = areaColors[g.area.id] || t.primary;
             return (
-              <div key={u.email} style={{ background: t.surfaceSolid, border: "1px solid " + t.border,
-                borderRadius: 12, overflow: "hidden" }}>
-                {/* Cabecera del usuario */}
-                <div onClick={() => setExpandedUser(isOpen ? null : u.email)}
-                  style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 18px",
-                    cursor: "pointer" }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = t.surfaceAlt)}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
-                  {/* Avatar con iniciales */}
-                  <div style={{ width: 38, height: 38, borderRadius: 99, background: t.primary + "1A",
-                    border: "2px solid " + t.primary + "44", display: "flex", alignItems: "center",
-                    justifyContent: "center", fontSize: 14, fontWeight: 700, color: t.primary, flexShrink: 0 }}>
-                    {u.email.slice(0, 2).toUpperCase()}</div>
-                  {/* Info */}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 14, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis",
-                      whiteSpace: "nowrap" }}>{u.email}</div>
-                    <div style={{ fontSize: 12, color: t.textDim, marginTop: 2, display: "flex", gap: 10,
-                      flexWrap: "wrap" }}>
-                      <span>{u.procCount} proceso{u.procCount !== 1 ? "s" : ""}</span>
-                      <span>{u.areaCount} área{u.areaCount !== 1 ? "s" : ""}</span>
-                    </div>
-                  </div>
-                  {/* Badges de rol */}
-                  <div style={{ display: "flex", gap: 5, flexShrink: 0 }}>
-                    {u.hasOwner && <span style={{ fontSize: 10, fontWeight: 700, color: roleColors.owner,
-                      background: roleColors.owner + "18", padding: "2px 7px", borderRadius: 4 }}>Owner</span>}
-                    {u.hasSteward && <span style={{ fontSize: 10, fontWeight: 700, color: roleColors.steward,
-                      background: roleColors.steward + "18", padding: "2px 7px", borderRadius: 4 }}>Steward</span>}
-                    {u.hasCustodian && <span style={{ fontSize: 10, fontWeight: 700, color: roleColors.custodian,
-                      background: roleColors.custodian + "18", padding: "2px 7px", borderRadius: 4 }}>Custodian</span>}
-                  </div>
-                  {/* Indicador de sensibilidad */}
-                  {u.totalSensitive > 0 && (
-                    <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 9px",
-                      background: "#EA433512", borderRadius: 6, border: "1px solid #EA433533", flexShrink: 0 }}>
-                      <ShieldCheck size={13} color="#EA4335" />
-                      <span style={{ fontSize: 11, fontWeight: 600, color: "#EA4335" }}>
-                        {u.totalSensitive} sensible{u.totalSensitive !== 1 ? "s" : ""}</span>
-                    </div>
-                  )}
-                  <ChevronRight size={16} color={t.textFaint}
-                    style={{ transform: isOpen ? "rotate(90deg)" : "none", transition: "transform .15s",
-                      flexShrink: 0 }} />
+              <div key={g.area.id}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                  <span style={{ width: 10, height: 10, borderRadius: 99, background: ac, flexShrink: 0 }} />
+                  <span style={{ fontSize: 14, fontWeight: 600, color: t.text }}>{g.area.name}</span>
+                  <span style={{ fontSize: 11.5, color: t.textFaint, fontWeight: 500 }}>
+                    {g.members.length} persona{g.members.length === 1 ? "" : "s"}
+                  </span>
                 </div>
-                {/* Detalle expandido */}
-                {isOpen && (
-                  <div style={{ padding: "0 18px 14px", borderTop: "1px solid " + t.border }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto auto auto",
-                      gap: "0", fontSize: 12 }}>
-                      {/* Header */}
-                      <div style={{ padding: "8px 12px 6px 0", fontWeight: 600, color: t.textDim }}>Rol</div>
-                      <div style={{ padding: "8px 12px 6px", fontWeight: 600, color: t.textDim }}>Proceso / Paso</div>
-                      <div style={{ padding: "8px 12px 6px", fontWeight: 600, color: t.textDim }}>Área</div>
-                      <div style={{ padding: "8px 12px 6px", fontWeight: 600, color: t.textDim }}>Datos</div>
-                      <div style={{ padding: "8px 12px 6px", fontWeight: 600, color: t.textDim }}>Sensibles</div>
-                      {u.assignments.map((a, i) => {
-                        const rc = roleColors[a.type] || t.textDim;
-                        const ac = areaColors[a.areaId] || t.textDim;
-                        return (
-                          <React.Fragment key={i}>
-                            <div style={{ padding: "6px 12px 6px 0", borderTop: "1px solid " + t.border + "44" }}>
-                              <span style={{ fontSize: 11, fontWeight: 600, color: rc,
-                                background: rc + "15", padding: "2px 6px", borderRadius: 4 }}>
-                                {roleLabels[a.type] || a.type}</span>
-                            </div>
-                            <div style={{ padding: "6px 12px", borderTop: "1px solid " + t.border + "44" }}>
-                              <div style={{ fontWeight: 500, color: t.text }}>{a.processName}</div>
-                              {a.stepName && <div style={{ fontSize: 11, color: t.textFaint }}>↳ {a.stepName}</div>}
-                            </div>
-                            <div style={{ padding: "6px 12px", borderTop: "1px solid " + t.border + "44",
-                              display: "flex", alignItems: "center", gap: 5 }}>
-                              <span style={{ width: 8, height: 8, borderRadius: 99, background: ac }} />
-                              <span style={{ color: t.textDim }}>{a.areaName}</span>
-                            </div>
-                            <div style={{ padding: "6px 12px", borderTop: "1px solid " + t.border + "44",
-                              color: t.textDim, textAlign: "center" }}>{a.totalFields}</div>
-                            <div style={{ padding: "6px 12px", borderTop: "1px solid " + t.border + "44",
-                              textAlign: "center" }}>
-                              {a.sensitiveCount > 0 ? (
-                                <span style={{ color: "#EA4335", fontWeight: 600 }}>{a.sensitiveCount}</span>
-                              ) : <span style={{ color: t.textFaint }}>—</span>}
-                            </div>
-                          </React.Fragment>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 10 }}>
+                  {g.members.map(renderMemberCard)}
+                </div>
               </div>
             );
           })}
