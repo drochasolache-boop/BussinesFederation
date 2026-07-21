@@ -324,7 +324,7 @@ const TENANTS = [
     sheetsUrl: DACOMSA_SHEETS_URL,
     defaultTheme: {
       companyName: "Frasle Mobility",
-      logo: "/tenants/frasle/logo.svg",
+      logo: "/tenants/frasle/logo.png",
       banner: null,
       primary: "#6B7280",
       mode: "light",
@@ -3329,7 +3329,7 @@ function EcosystemExplorer({ data, t, areaColors, procColors, onEditProcess }) {
   const [selectedArea, setSelectedArea] = useState(null);
   const [selectedProc, setSelectedProc] = useState(null);
   const [level, setLevel] = useState("overview");
-  const [filter, setFilter] = useState("steps");
+  const [filter, setFilter] = useState("procs");
   const [openMenu, setOpenMenu] = useState(null);
   const [activeAreas, setActiveAreas] = useState(null);
   const [activeProcesses, setActiveProcesses] = useState(null);
@@ -3432,7 +3432,6 @@ function EcosystemExplorer({ data, t, areaColors, procColors, onEditProcess }) {
   const viewFilters = [
     { id: "areas", label: "Solo áreas" },
     { id: "procs", label: "Procesos" },
-    { id: "steps", label: "Con pasos" },
     { id: "risks", label: "Riesgos" },
   ];
 
@@ -4649,7 +4648,11 @@ export default function App() {
   const [theme, setThemeState] = useState(null);
   const [data, setData] = useState(EMPTY_DATA);
   const [areaColors, setAreaColors] = useState({});
-  const [view, setView] = useState("dashboard");
+  // Deep link a Modo cine: /cine  (o ?cine=1). Requiere login; abre el cine al entrar.
+  const cineRoute = typeof window !== "undefined" &&
+    (/\/cine\/?$/.test(window.location.pathname) || new URLSearchParams(window.location.search).has("cine"));
+  const [cineDeepLink, setCineDeepLink] = useState(cineRoute);
+  const [view, setView] = useState(cineRoute ? "flows" : "dashboard");
   const [captureProcId, setCaptureProcId] = useState(null);
   // Se incrementa cada vez que se entra a Documentar desde el menú, para volver
   // siempre a la pantalla de selección (nuevo vs. editar existente).
@@ -5325,6 +5328,7 @@ export default function App() {
         <div style={{ padding: "14px 18px" }}>
           {view === "dashboard" && <Dashboard data={data} t={t} theme={theme} areaColors={areaColors} procColors={procColors} setView={setView} />}
           {view === "flows" && <FlowsView data={data} t={t} areaColors={areaColors}
+            initialCinema={cineDeepLink} onCinemaConsumed={() => setCineDeepLink(false)}
             onOpen={(procId) => { setCaptureProcId(procId); setView("capture"); }}
             onNew={() => { setCaptureProcId(null); setCaptureEntryNonce((x) => x + 1); setView("capture"); }} />}
           {view === "graph" && (
@@ -5539,13 +5543,14 @@ const CINEMA_CSS = `
 @keyframes cineEdgeIn{ to{ stroke-dashoffset:0; } }
 @keyframes cineFadeUp{ from{opacity:0; transform:translateY(10px);} to{opacity:1; transform:translateY(0);} }
 @keyframes cineOrbitSpin{ to{ transform:rotate(360deg); } }
+@keyframes cineFadeOnly{ from{opacity:0;} to{opacity:1;} }
 @keyframes cinePulse{ 0%,100%{ opacity:.45; } 50%{ opacity:1; } }
 @keyframes cineHalo{ 0%,100%{ opacity:.35; r:32; } 50%{ opacity:.75; r:38; } }
 .cine-node-in{ opacity:0; animation:cineNodeIn .55s cubic-bezier(.2,.8,.2,1) forwards; transform-box:fill-box; transform-origin:center; }
 .cine-edge-in{ stroke-dasharray:1; stroke-dashoffset:1; animation:cineEdgeIn .7s ease forwards; }
 .cine-fade-up{ opacity:0; animation:cineFadeUp .6s ease forwards; }
 .cine-orbit-spin{ animation:cineOrbitSpin 70s linear infinite; transform-origin:center; }
-.cine-orbit-node{ opacity:0; animation:cineFadeUp .5s ease forwards; transition:transform .2s; }
+.cine-orbit-node{ opacity:0; animation:cineFadeOnly .5s ease forwards; transition:transform .2s; }
 .cine-orbit-node:hover{ transform:translate(-50%,-50%) scale(1.12) !important; }
 .cine-zoom{ transition:transform 1.1s cubic-bezier(.6,.05,.2,1); transform-origin:0 0; }
 .cine-halo{ animation:cineHalo 2.4s ease-in-out infinite; }
@@ -5611,7 +5616,7 @@ function CinemaParticles({ color }) {
   return <canvas ref={ref} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }} />;
 }
 
-function CinemaFlow({ proc, data, layout, tour, focus }) {
+function CinemaFlow({ proc, data, layout, tour, focus, onFocusStep }) {
   const W = 1280, H = 680, padX = 190, padTop = 170, padBottom = 170;
   const cols = Math.max(layout.cols, 1), rows = Math.max(layout.rows, 1);
   const availW = W - padX * 2, availH = H - padTop - padBottom;
@@ -5675,10 +5680,14 @@ function CinemaFlow({ proc, data, layout, tour, focus }) {
             const nm = (proc.steps.find((s) => s.id === n.id) || {}).name || "";
             const isFocus = focusNode && n.id === focusNode.id;
             const dim = focusNode && !isFocus;
+            const ti = tour.findIndex((tn) => tn.id === n.id);
             return (
               <g key={n.id} className="cine-node-in cine-dim" opacity={dim ? 0.22 : 1}
-                style={{ animationDelay: `${0.35 + n.col * 0.35}s`, transformOrigin: `${cx}px ${cy}px` }}>
+                onClick={() => onFocusStep && onFocusStep(ti)}
+                style={{ animationDelay: `${0.35 + n.col * 0.35}s`, transformOrigin: `${cx}px ${cy}px`, cursor: "pointer" }}>
                 {isFocus && <circle cx={cx} cy={cy} r="32" fill="none" stroke={proc.color} strokeWidth="2" className="cine-halo" />}
+                {/* área de click más grande e invisible para acertarle fácil */}
+                <circle cx={cx} cy={cy} r="26" fill="transparent" />
                 {n.kind === "join"
                   ? <rect x={cx - 13} y={cy - 13} width="26" height="26" rx="4" fill={proc.color}
                       transform={`rotate(45 ${cx} ${cy})`} filter="url(#cineGlow)" />
@@ -5865,7 +5874,8 @@ function CinemaMode({ data, areaColors, onClose }) {
 
       {scene === "orbit"
         ? <CinemaOrbit procs={procs} onPick={(i) => { gotoProc(i); setScene("flow"); }} />
-        : <CinemaFlow proc={cur} data={data} layout={layout} tour={tour} focus={focus} />}
+        : <CinemaFlow proc={cur} data={data} layout={layout} tour={tour} focus={focus}
+            onFocusStep={(i) => { if (i >= 0) { setFocus(i); setPlaying(false); } }} />}
 
       {scene === "flow" && (
         <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, display: "flex", flexDirection: "column",
@@ -5892,8 +5902,14 @@ function CinemaMode({ data, areaColors, onClose }) {
   );
 }
 
-function FlowsView({ data, t, areaColors, onOpen, onNew }) {
-  const [cinema, setCinema] = useState(false);
+function FlowsView({ data, t, areaColors, onOpen, onNew, initialCinema, onCinemaConsumed }) {
+  const [cinema, setCinema] = useState(!!initialCinema);
+  const setCineUrl = (on) => { try { window.history.replaceState(null, "", on ? "/cine" : "/"); } catch (e) { /* noop */ } };
+  const openCinema = () => { setCinema(true); setCineUrl(true); };
+  const closeCinema = () => { setCinema(false); setCineUrl(false); };
+  useEffect(() => {
+    if (initialCinema) { setCineUrl(true); onCinemaConsumed?.(); }
+  }, []); // eslint-disable-line
   const groups = data.areas.map((a) => ({
     area: a,
     procs: data.processes.filter((p) => p.areaId === a.id)
@@ -5939,12 +5955,12 @@ function FlowsView({ data, t, areaColors, onOpen, onNew }) {
         t={t}
         action={<div style={{ display: "flex", gap: 8 }}>
           {data.processes.length > 0 && (
-            <Btn t={t} variant="ghost" onClick={() => setCinema(true)}><Play size={15} /> Modo cine</Btn>
+            <Btn t={t} variant="ghost" onClick={openCinema}><Play size={15} /> Modo cine</Btn>
           )}
           <Btn t={t} onClick={onNew}><Plus size={16} /> Nuevo flujo</Btn>
         </div>} />
 
-      {cinema && <CinemaMode data={data} areaColors={areaColors} onClose={() => setCinema(false)} />}
+      {cinema && <CinemaMode data={data} areaColors={areaColors} onClose={closeCinema} />}
 
       {groups.length === 0 ? (
         <div className="premium-card" style={{ padding: 28, textAlign: "center", color: t.textFaint, fontSize: 13 }}>
