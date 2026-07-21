@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 130" role="img" aria-label="Frasle Mobility">
+  <!-- Barras diagonales rojas -->
+  <g fill="#E2231A">
+    <polygon points="8,96 44,96 96,10 60,10" />
+    <polygon points="56,96 92,96 144,10 108,10" />
+    <polygon points="104,96 140,96 176,34 176,10 168,10" />
+  </g>
+  <!-- Wordmark FRASLE -->
+  <text x="196" y="86" font-family="Arial, Helvetica, sans-serif" font-size="92"
+    font-weight="800" font-style="italic" fill="#5B6067" letter-spacing="-3">FRASLE</text>
+  <!-- MOBILITY -->
+  <text x="360" y="120" font-family="Arial, Helvetica, sans-serif" font-size="24"
+    font-weight="600" font-style="italic" fill="#5B6067" letter-spacing="8">MOBILITY</text>
+</svg>

@@ -323,8 +323,8 @@ const TENANTS = [
     label: "Dacomsa",
     sheetsUrl: DACOMSA_SHEETS_URL,
     defaultTheme: {
-      companyName: "Dacomsa",
-      logo: "/tenants/dacomsa/logo.svg",
+      companyName: "Frasle Mobility",
+      logo: "/tenants/frasle/logo.svg",
       banner: null,
       primary: "#6B7280",
       mode: "light",
@@ -342,11 +342,11 @@ function themeFromConfigRows(configRows, fallback) {
     const key = String(r.clave || r.key || "").trim();
     if (key) map[key] = String(r.valor ?? r.value ?? "");
   });
-  const logo = map.logo?.trim();
   const banner = map.banner?.trim();
   return {
-    companyName: map.companyName || map.nombre || fallback.companyName,
-    logo: logo || fallback.logo || null,
+    // Nombre y logo fijos por código (marca Frasle). Se ignora lo guardado en el Sheet.
+    companyName: fallback.companyName,
+    logo: fallback.logo || null,
     banner: banner || fallback.banner || null,
     // Migra el azul heredado (#4285F4) al acento silver; respeta colores custom.
     primary: (map.primary && map.primary.toLowerCase() !== "#4285f4") ? map.primary : fallback.primary,
@@ -1598,22 +1598,6 @@ function Onboarding({ onDone }) {
             <Input t={t} placeholder="Ej. Dacomsa" value={theme.companyName}
               onChange={(e) => setTheme((s) => ({ ...s, companyName: e.target.value }))} />
           </Field>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-            {[["logo", "Logotipo", logoRef], ["banner", "Banner (opcional)", bannerRef]].map(([key, lbl, ref]) => (
-              <Field key={key} label={lbl} t={t}>
-                <input ref={ref} type="file" accept="image/*" hidden
-                  onChange={(e) => e.target.files[0] && readImg(e.target.files[0], key)} />
-                <div onClick={() => ref.current.click()} style={{ border: `1.5px dashed ${t.border}`,
-                  borderRadius: 8, height: 84, display: "flex", alignItems: "center", justifyContent: "center",
-                  cursor: "pointer", overflow: "hidden", background: t.surfaceAlt }}>
-                  {theme[key] ? <img src={theme[key]} alt="" style={{ width: key === "banner" ? "100%" : "auto",
-                    height: key === "banner" ? "100%" : "80%", maxWidth: "82%", objectFit: key === "banner" ? "cover" : "contain" }} />
-                    : <div style={{ textAlign: "center", color: t.textFaint }}>
-                        <Upload size={18} /><div style={{ fontSize: 11.5, marginTop: 4 }}>Subir</div></div>}
-                </div>
-              </Field>
-            ))}
-          </div>
           <Field label="Color principal" t={t}>
             <div style={{ display: "flex", gap: 9, alignItems: "center", flexWrap: "wrap" }}>
               {palette.map((c) => (
@@ -9306,18 +9290,15 @@ function SettingsModal({ theme, t, data, areaColors, setAreaColor, onSave, onClo
         <Field label="Nombre de la empresa" t={t}>
           <Input t={t} value={draft.companyName} onChange={(e) => setDraft({ ...draft, companyName: e.target.value })} /></Field>
         <Field label="Logotipo" t={t}>
-          <input ref={logoRef} type="file" accept="image/*" hidden
-            onChange={(e) => e.target.files[0] && readImg(e.target.files[0], "logo")} />
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <div onClick={() => logoRef.current.click()} style={{ border: `1.5px dashed ${t.border}`, borderRadius: 8,
-              width: 120, height: 56, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
+            <div style={{ border: `1px solid ${t.border}`, borderRadius: 8,
+              width: 140, height: 56, display: "flex", alignItems: "center", justifyContent: "center",
               overflow: "hidden", background: t.surfaceAlt }}>
-              {draft.logo ? <img src={draft.logo} alt="" style={{ maxHeight: "80%", maxWidth: "82%", objectFit: "contain" }} />
-                : <Upload size={17} color={t.textFaint} />}</div>
-            {draft.logo && <Btn t={t} variant="ghost" onClick={() => setDraft({ ...draft, logo: null })}>Quitar</Btn>}
+              <img src={draft.logo} alt="" style={{ maxHeight: "78%", maxWidth: "84%", objectFit: "contain" }} />
+            </div>
           </div>
           <div style={{ fontSize: 11, color: t.textFaint, marginTop: 6, lineHeight: 1.4 }}>
-            Usa imágenes pequeñas (&lt; 100 KB). Los cambios se guardan automáticamente.
+            El logotipo está fijado por configuración de la marca.
           </div>
         </Field>
         <Field label="Color principal" t={t}>
