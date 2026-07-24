@@ -1,6 +1,9 @@
 node_modules
 dist
+databricks/dist
 .DS_Store
 *.local
+.env
 
 .vercel
+.databricks

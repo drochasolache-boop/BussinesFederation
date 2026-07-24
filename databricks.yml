@@ -1,0 +1,91 @@
+# Databricks Asset Bundle — despliega la app de Gobernanza como Databricks App.
+#
+# Requisitos:
+#   - Databricks CLI v0.230+ (`databricks -v`) y `databricks auth login`.
+#   - Unity Catalog con el esquema creado (databricks/sql/schema.sql).
+#   - Un SQL Warehouse (serverless recomendado).
+#
+# Uso (ver también databricks/README.md y scripts/deploy.sh):
+#   databricks bundle deploy -t dev
+#   databricks bundle run gobernanza_app -t dev     # arranca/actualiza la App
+
+bundle:
+  name: gobernanza
+
+# Variables — ajústalas por target abajo o pásalas con --var.
+variables:
+  warehouse_id:
+    description: "ID del SQL Warehouse (sin la ruta http, solo el id)."
+    default: ""
+  uc_catalog:
+    description: "Catálogo de Unity Catalog."
+    default: "main"
+  uc_schema:
+    description: "Esquema de Unity Catalog."
+    default: "gobernanza"
+  super_emails:
+    description: "Correos super usuario (separados por comas)."
+    default: ""
+
+resources:
+  apps:
+    gobernanza_app:
+      name: "gobernanza"
+      description: "Plataforma de gobernanza de datos (frontend React + FastAPI sobre Unity Catalog)."
+      # Carpeta que se sincroniza como código de la App. Debe contener app.yaml,
+      # server/, requirements.txt y el build del frontend en databricks/dist/.
+      source_code_path: ./databricks
+
+      # Config de la App (equivale/override de app.yaml). Inyecta las env vars,
+      # incluyendo el HTTP path del warehouse referenciado como recurso.
+      config:
+        command:
+          - "uvicorn"
+          - "server.main:app"
+          - "--host"
+          - "0.0.0.0"
+          - "--port"
+          - "8000"
+        env:
+          - name: UC_CATALOG
+            value: ${var.uc_catalog}
+          - name: UC_SCHEMA
+            value: ${var.uc_schema}
+          - name: SUPER_EMAILS
+            value: ${var.super_emails}
+          - name: STATIC_DIR
+            value: "dist"
+          # El HTTP path del warehouse lo provee el recurso 'sql_warehouse' de abajo.
+          - name: DATABRICKS_HTTP_PATH
+            valueFrom: "sql_warehouse"
+
+      # Recurso: SQL Warehouse. La App usa su service principal para conectarse
+      # (no hace falta token manual). Otórgale permisos sobre el esquema en UC.
+      resources:
+        - name: "sql_warehouse"
+          description: "Warehouse para leer/escribir el catálogo en Unity Catalog."
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: "CAN_USE"
+
+targets:
+  dev:
+    mode: development
+    default: true
+    # workspace:
+    #   host: https://<tu-workspace>.cloud.databricks.com
+    variables:
+      uc_catalog: "main"
+      uc_schema: "gobernanza"
+      # warehouse_id: "xxxxxxxxxxxxxxxx"
+      # super_emails: "tu.correo@empresa.com"
+
+  prod:
+    mode: production
+    # workspace:
+    #   host: https://<tu-workspace>.cloud.databricks.com
+    variables:
+      uc_catalog: "main"
+      uc_schema: "gobernanza"
+      # warehouse_id: "xxxxxxxxxxxxxxxx"
+      # super_emails: "admin@empresa.com"

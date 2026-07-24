@@ -39,7 +39,21 @@ const DACOMSA_SHEETS_URL = "https://<tu-app>.databricksapps.com/api";
 ```
 El resto del cliente funciona igual (mismas acciones y formato de filas).
 
-## 4. Desplegar como Databricks App
+## 4. Desplegar con un comando (Asset Bundle) — recomendado
+Con el **Databricks CLI v0.230+** autenticado (`databricks auth login`) y el
+esquema ya creado:
+
+1. Edita `databricks.yml` (en la raíz): pon tu `warehouse_id`, `uc_catalog`,
+   `super_emails` y el `host` del workspace en el target `dev`/`prod`.
+2. Ejecuta:
+   ```bash
+   ./scripts/deploy-databricks.sh dev      # build + copia dist + bundle deploy + run
+   ```
+   (En Windows con Git Bash funciona igual; o corre los pasos del script a mano.)
+3. Toma la URL de la App en Databricks (**Compute → Apps**).
+4. Da permisos al service principal de la App sobre el esquema (ver Fase 7 abajo).
+
+## 4-bis. Desplegar manual como Databricks App
 1. `npm run build` (genera `dist/`).
 2. Sube este directorio + `dist/` a Databricks (Workspace o repo) y crea una
    **Databricks App** apuntando a `app.yaml`.
