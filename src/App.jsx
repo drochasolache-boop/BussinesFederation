@@ -315,7 +315,12 @@ const SEED_AREA_COLORS = ["#4285F4", "#34A853", "#FBBC04", "#EA4335", "#A142F4",
 // ============================================================================
 // ENTORNOS — cada empresa con su Google Sheet y branding
 // ============================================================================
-const DACOMSA_SHEETS_URL = "https://script.google.com/macros/s/AKfycbzp-NY7PnftUfhByWRds5QVYYH7IP8Ax2lvBWs8BdURQOaVpiwAkUjw5S7qcMZeFlW33A/exec";
+// Backend intercambiable: por defecto Google Sheets/Apps Script.
+// Para migrar a Databricks/Unity Catalog, define VITE_BACKEND_URL en un .env
+// (p. ej. https://<app>.databricksapps.com/api) — el resto del cliente no cambia.
+const DACOMSA_SHEETS_URL =
+  import.meta.env.VITE_BACKEND_URL ||
+  "https://script.google.com/macros/s/AKfycbzp-NY7PnftUfhByWRds5QVYYH7IP8Ax2lvBWs8BdURQOaVpiwAkUjw5S7qcMZeFlW33A/exec";
 
 const TENANTS = [
   {
