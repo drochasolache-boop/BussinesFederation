@@ -1,0 +1,25 @@
+# Configuración de Databricks Apps.
+# El comando arranca el backend FastAPI, que sirve el build de React (dist/)
+# y expone /api con el mismo contrato JSON que usaba el Apps Script.
+command:
+  - "uvicorn"
+  - "server.main:app"
+  - "--host"
+  - "0.0.0.0"
+  - "--port"
+  - "8000"
+
+env:
+  # Catálogo y esquema de Unity Catalog donde viven las tablas.
+  - name: UC_CATALOG
+    value: "main"
+  - name: UC_SCHEMA
+    value: "gobernanza"
+  # Conexión al SQL Warehouse (Databricks Apps puede inyectar estos vía recurso).
+  # DATABRICKS_SERVER_HOSTNAME y DATABRICKS_HTTP_PATH del warehouse.
+  # El token/credencial lo provee el service principal de la App.
+  - name: DATABRICKS_HTTP_PATH
+    value: ""   # p. ej. /sql/1.0/warehouses/xxxxxxxxxxxx
+  # Carpeta del build de React servido como estáticos.
+  - name: STATIC_DIR
+    value: "dist"
