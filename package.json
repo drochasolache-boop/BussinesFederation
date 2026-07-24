@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:databricks": "vite build --outDir databricks/dist --emptyOutDir",
     "preview": "vite preview",
     "seed:dummy": "node scripts/seed-dummy-process.mjs",
     "seed:steps": "node scripts/seed-sheets-steps.mjs",

@@ -39,6 +39,9 @@ const DACOMSA_SHEETS_URL = "https://<tu-app>.databricksapps.com/api";
 ```
 El resto del cliente funciona igual (mismas acciones y formato de filas).
 
+> ¿Prefieres desplegar **desde la UI** (sin CLI)? Sigue **`DEPLOY-UI.md`** —
+> solo compila con `npm run build:databricks` y sube la carpeta al Workspace.
+
 ## 4. Desplegar con un comando (Asset Bundle) — recomendado
 Con el **Databricks CLI v0.230+** autenticado (`databricks auth login`) y el
 esquema ya creado:
