@@ -55,9 +55,15 @@ El resto del cliente funciona igual (mismas acciones y formato de filas).
 - **Colaboración/locks**: viven en una tabla Delta. Delta es OLAP: para muchos
   locks/heartbeats conviene mover el estado efímero a **Databricks Lakebase
   (Postgres OLTP)**. Con polling (~5s) y pocos usuarios, Delta sirve para el POC.
-- **Auth**: se portó el login propio (tablas `users`/`sessions`). Alternativa
-  recomendada: usar la **identidad nativa de Databricks (SSO)** y eliminar el
-  módulo de contraseñas.
+- **Auth (SSO / Microsoft Entra ID)**: ya NO hay contraseñas. La Databricks App
+  autentica con Entra ID; el backend lee la identidad de los headers
+  (`X-Forwarded-Email`) y mapea email → rol en la tabla `user_roles`. El
+  frontend hace **login automático** (acción `ssoLogin`) sin pantalla de login.
+  - Configura `SUPER_EMAILS` (env, separado por comas) con los correos que deben
+    ser **super** por defecto; el resto entran como `editor`. Si la tabla está
+    vacía, el primer usuario que entra queda como super.
+  - Un super puede reasignar roles desde **Administración → Usuarios** (acción
+    `registerUser`, que ahora asigna rol por email, sin contraseña).
 
 ## Pendientes (roadmap)
 - [ ] MERGE por proceso/paso en lugar de upsert masivo.

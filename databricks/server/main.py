@@ -218,109 +218,106 @@ def _parse_ms(iso):
         return None
 
 # --------------------------------------------------------------------------
-# Autenticación (tablas users/sessions). Alternativa: identidad nativa DBX.
+# Autenticación por identidad de Databricks (SSO / Microsoft Entra ID).
+# La Databricks App ya autentica al usuario; leemos su identidad de los
+# headers y mapeamos email -> rol en la tabla `user_roles` (sin contraseñas).
+# SUPER_EMAILS (env, separado por comas) define quién es super por defecto.
 # --------------------------------------------------------------------------
-def _public_user(u):
-    return {"id": u["id"], "nombre": u["nombre"], "email": u["email"], "rol": u["rol"],
-            "activo": str(u.get("activo")).lower() != "false"}
+SUPER_EMAILS = {e.strip().lower() for e in os.environ.get("SUPER_EMAILS", "").split(",") if e.strip()}
 
-def _find_user_email(email):
-    e = str(email or "").strip().lower()
-    rows = query(f"SELECT * FROM {tbl('users')} WHERE lower(email) = ?", [e])
-    return rows[0] if rows else None
+def identity(request):
+    h = request.headers
+    email = (h.get("X-Forwarded-Email") or h.get("X-Forwarded-Preferred-Username")
+             or h.get("X-Forwarded-User") or "").strip().lower()
+    name = h.get("X-Forwarded-Preferred-Username") or (email.split("@")[0] if email else "")
+    return email, name
 
-def _create_session(user_id):
-    token = uuid.uuid4().hex + uuid.uuid4().hex
-    exp = (dt.datetime.utcnow() + dt.timedelta(milliseconds=SESSION_TTL_MS)).isoformat() + "Z"
+def _roles_count():
+    return int(query(f"SELECT count(*) AS c FROM {tbl('user_roles')}")[0]["c"])
+
+def _role_for(email):
+    rows = query(f"SELECT * FROM {tbl('user_roles')} WHERE lower(email) = ?", [email])
+    return (rows[0]["rol"], rows[0].get("nombre") or "") if rows else (None, None)
+
+def ensure_user(email, name):
+    if not email:
+        return None
+    rol, nombre = _role_for(email)
+    if rol:
+        return {"id": email, "email": email, "nombre": nombre or name, "rol": rol, "activo": True}
+    # Nuevo: super si está en SUPER_EMAILS o si aún no hay ninguno; si no, editor.
+    rol = "super" if (email in SUPER_EMAILS or _roles_count() == 0) else "editor"
     with connect() as conn, conn.cursor() as cur:
-        cur.execute(f"INSERT INTO {tbl('sessions')} (token, userId, expiraEn, creadoEn) VALUES (?,?,?,?)",
-                    [token, user_id, exp, now_iso()])
-    return token
+        cur.execute(f"INSERT INTO {tbl('user_roles')} (email,nombre,rol,creadoEn,creadoPor) VALUES (?,?,?,?,?)",
+                    [email, name, rol, now_iso(), "sso"])
+    return {"id": email, "email": email, "nombre": name, "rol": rol, "activo": True}
 
-def _user_from_token(token):
-    if not token:
-        return None
-    rows = query(f"SELECT * FROM {tbl('sessions')} WHERE token = ?", [token])
-    if not rows:
-        return None
-    exp = _parse_ms(rows[0].get("expiraEn"))
-    if not exp or exp < time.time() * 1000:
-        return None
-    urows = query(f"SELECT * FROM {tbl('users')} WHERE id = ?", [rows[0]["userId"]])
-    if not urows or str(urows[0].get("activo")).lower() == "false":
-        return None
-    return _public_user(urows[0])
+def _caller_is_super(request):
+    email, name = identity(request)
+    u = ensure_user(email, name)
+    return bool(u and u["rol"] == "super")
 
-def auth_check():
-    n = query(f"SELECT count(*) AS c FROM {tbl('users')}")[0]["c"]
-    return {"status": "ok", "needsBootstrap": int(n) == 0}
+def auth_check(request):
+    # Con SSO no hay bootstrap manual: la identidad la da Databricks/Entra.
+    return {"status": "ok", "needsBootstrap": False, "sso": True}
 
-def auth_bootstrap(b):
-    n = query(f"SELECT count(*) AS c FROM {tbl('users')}")[0]["c"]
-    if int(n) > 0:
-        return {"status": "error", "message": "Ya existe un super usuario"}
-    email, nombre, pw = str(b.get("email", "")).strip().lower(), str(b.get("nombre", "")).strip(), str(b.get("password", ""))
-    if not (email and nombre and pw):
-        return {"status": "error", "message": "Datos incompletos"}
-    uid = str(uuid.uuid4())
-    with connect() as conn, conn.cursor() as cur:
-        cur.execute(f"INSERT INTO {tbl('users')} (id,nombre,email,passwordHash,rol,activo,creadoEn,creadoPor) VALUES (?,?,?,?,?,?,?,?)",
-                    [uid, nombre, email, sha256_hex(pw), "super", "true", now_iso(), "bootstrap"])
-    return {"status": "ok", "token": _create_session(uid), "user": {"id": uid, "nombre": nombre, "email": email, "rol": "super", "activo": True}}
+def sso_login(request):
+    email, name = identity(request)
+    if not email:
+        return {"status": "error", "message": "Sin identidad de Databricks (SSO)"}
+    return {"status": "ok", "token": email, "user": ensure_user(email, name)}
 
-def auth_login(b):
-    email, pw = str(b.get("email", "")).strip().lower(), str(b.get("password", ""))
-    u = _find_user_email(email)
-    if not u or str(u.get("activo")).lower() == "false" or u["passwordHash"] != sha256_hex(pw):
-        return {"status": "error", "message": "Correo o contraseña incorrectos"}
-    return {"status": "ok", "token": _create_session(u["id"]), "user": _public_user(u)}
+def auth_validate(request):
+    email, name = identity(request)
+    if not email:
+        return {"status": "error", "message": "Sesión inválida"}
+    return {"status": "ok", "user": ensure_user(email, name)}
 
-def auth_logout(b):
-    with connect() as conn, conn.cursor() as cur:
-        cur.execute(f"DELETE FROM {tbl('sessions')} WHERE token = ?", [str(b.get("token", ""))])
+def auth_logout(request):
+    # El cierre real de sesión lo maneja Databricks/Entra ID.
     return {"status": "ok"}
 
-def auth_validate(b):
-    u = _user_from_token(b.get("token"))
-    return {"status": "ok", "user": u} if u else {"status": "error", "message": "Sesión inválida"}
-
-def auth_register(b):
-    caller = _user_from_token(b.get("token"))
-    if not caller or caller["rol"] != "super":
+def auth_register(request, b):
+    if not _caller_is_super(request):
         return {"status": "error", "message": "Sin permiso"}
-    email, nombre, pw = str(b.get("email", "")).strip().lower(), str(b.get("nombre", "")).strip(), str(b.get("password", ""))
+    email = str(b.get("email", "")).strip().lower()
+    nombre = str(b.get("nombre", "")).strip()
     rol = "super" if b.get("rol") == "super" else "editor"
-    if not (email and nombre and pw):
-        return {"status": "error", "message": "Datos incompletos"}
-    if _find_user_email(email):
-        return {"status": "error", "message": "Ese correo ya existe"}
+    if not email:
+        return {"status": "error", "message": "Correo requerido"}
     with connect() as conn, conn.cursor() as cur:
-        cur.execute(f"INSERT INTO {tbl('users')} (id,nombre,email,passwordHash,rol,activo,creadoEn,creadoPor) VALUES (?,?,?,?,?,?,?,?)",
-                    [str(uuid.uuid4()), nombre, email, sha256_hex(pw), rol, "true", now_iso(), caller["email"]])
+        cur.execute(f"DELETE FROM {tbl('user_roles')} WHERE lower(email) = ?", [email])
+        cur.execute(f"INSERT INTO {tbl('user_roles')} (email,nombre,rol,creadoEn,creadoPor) VALUES (?,?,?,?,?)",
+                    [email, nombre, rol, now_iso(), "assign"])
     return {"status": "ok"}
 
-def auth_list_users(b):
-    caller = _user_from_token(b.get("token"))
-    if not caller or caller["rol"] != "super":
+def auth_list_users(request, b):
+    if not _caller_is_super(request):
         return {"status": "error", "message": "Sin permiso"}
-    return {"status": "ok", "users": [_public_user(u) for u in query(f"SELECT * FROM {tbl('users')}")]}
+    rows = query(f"SELECT email, nombre, rol FROM {tbl('user_roles')}")
+    users = [{"id": r["email"], "email": r["email"], "nombre": r.get("nombre") or "",
+              "rol": r["rol"], "activo": True} for r in rows]
+    return {"status": "ok", "users": users}
 
 # --------------------------------------------------------------------------
 # Router (mismo contrato que el Apps Script)
 # --------------------------------------------------------------------------
+# Cada handler recibe (body, request). Los de catálogo/locks ignoran request.
 ROUTES = {
-    "load": lambda b: read_catalog(),
-    "checkAuth": lambda b: auth_check(),
-    "bootstrapSuper": auth_bootstrap,
-    "login": auth_login,
-    "logout": auth_logout,
-    "validateSession": auth_validate,
-    "registerUser": auth_register,
-    "listUsers": auth_list_users,
-    "acquireLock": acquire_lock,
-    "releaseLock": release_lock,
-    "releaseSession": release_session,
-    "heartbeat": heartbeat,
+    "load": lambda b, r: read_catalog(),
+    "checkAuth": lambda b, r: auth_check(r),
+    # Con SSO, login/bootstrap/validate derivan la identidad de Databricks.
+    "login": lambda b, r: sso_login(r),
+    "ssoLogin": lambda b, r: sso_login(r),
+    "bootstrapSuper": lambda b, r: sso_login(r),
+    "logout": lambda b, r: auth_logout(r),
+    "validateSession": lambda b, r: auth_validate(r),
+    "registerUser": lambda b, r: auth_register(r, b),
+    "listUsers": lambda b, r: auth_list_users(r, b),
+    "acquireLock": lambda b, r: acquire_lock(b),
+    "releaseLock": lambda b, r: release_lock(b),
+    "releaseSession": lambda b, r: release_session(b),
+    "heartbeat": lambda b, r: heartbeat(b),
 }
 
 app = FastAPI(title="Gobernanza · Unity Catalog backend")
@@ -340,7 +337,7 @@ async def api(request: Request):
     action = body.get("action")
     try:
         if action in ROUTES:
-            return JSONResponse(ROUTES[action](body))
+            return JSONResponse(ROUTES[action](body, request))
         # Sin acción reconocida => guardar catálogo (equivale a writeCatalog).
         return JSONResponse(write_catalog(body))
     except Exception as err:  # noqa: BLE001

@@ -23,3 +23,8 @@ env:
   # Carpeta del build de React servido como estáticos.
   - name: STATIC_DIR
     value: "dist"
+  # Correos (separados por comas) que serán super usuarios por SSO.
+  # El resto entra como editor. Si la tabla user_roles está vacía, el primero
+  # que inicia sesión queda como super automáticamente.
+  - name: SUPER_EMAILS
+    value: ""

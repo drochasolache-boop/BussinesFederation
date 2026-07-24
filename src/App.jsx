@@ -1223,6 +1223,19 @@ async function checkAuthNeedsBootstrap(sheetsUrl) {
   return check?.needsBootstrap === true;
 }
 
+// Login por SSO (identidad de Databricks). Solo se activa si el backend reporta
+// sso:true en checkAuth; contra Google Sheets devuelve null y NO envía ssoLogin.
+async function ssoAutoLogin(sheetsUrl) {
+  if (!sheetsUrl) return null;
+  const check = await postSheetsAction(sheetsUrl, { action: "checkAuth" });
+  if (check?.sso !== true) return null;
+  const res = await postSheetsAction(sheetsUrl, { action: "ssoLogin" });
+  if (!res || res.status !== "ok" || !res.user) return null;
+  const session = { token: res.token, user: res.user, savedAt: new Date().toISOString() };
+  await store.set(AUTH_SESSION_KEY, session);
+  return { ok: true, ...session };
+}
+
 async function loginUser(sheetsUrl, email, password) {
   if (sheetsUrl && await isRemoteAuthAvailable(sheetsUrl)) {
     return remoteLogin(sheetsUrl, email, password);
@@ -4979,6 +4992,8 @@ export default function App() {
       }
 
       const saved = await loadAuthSession();
+      let authedUser = null;
+      let authedToken = null;
       if (saved?.token && saved?.user?.email) {
         let user = saved.user;
         if (tenant.sheetsUrl && await isRemoteAuthAvailable(tenant.sheetsUrl)) {
@@ -4989,19 +5004,27 @@ export default function App() {
             user = null;
           }
         }
-        if (user) {
-          setAuthUser(user);
-          setAuthToken(saved.token);
-          const collab = authUserToCollabSession(user, await store.get(COLLAB_SESSION_KEY));
-          await saveCollabSession(collab);
-          setCollabSession(collab);
-          await bootstrapTenant(tenantId);
-          setBooted(true);
-          setLoading(false);
-        }
+        if (user) { authedUser = user; authedToken = saved.token; }
+      }
+
+      // Fallback: login automático por SSO (Databricks). No aplica a Google Sheets.
+      if (!authedUser && tenant.sheetsUrl) {
+        const sso = await ssoAutoLogin(tenant.sheetsUrl);
+        if (sso?.user) { authedUser = sso.user; authedToken = sso.token; setNeedsBootstrap(false); }
+      }
+
+      if (authedUser) {
+        setAuthUser(authedUser);
+        setAuthToken(authedToken);
+        const collab = authUserToCollabSession(authedUser, await store.get(COLLAB_SESSION_KEY));
+        await saveCollabSession(collab);
+        setCollabSession(collab);
+        await bootstrapTenant(tenantId);
+        setBooted(true);
+        setLoading(false);
       }
       setAuthReady(true);
-      if (!saved?.user?.email) setLoading(false);
+      if (!authedUser) setLoading(false);
     })();
   }, [bootstrapTenant]);
 

@@ -75,14 +75,9 @@ CREATE TABLE IF NOT EXISTS main.gobernanza.ediciones_activas (
   processId STRING, stepId STRING, bloqueadoEn STRING, latido STRING
 ) USING DELTA;
 
--- ---- Autenticación propia (opcional) --------------------------------------
--- Si usas la identidad nativa de Databricks (SSO), estas tablas no son
--- necesarias. Se dejan por compatibilidad con el flujo de login actual.
-CREATE TABLE IF NOT EXISTS main.gobernanza.users (
-  id STRING, nombre STRING, email STRING, passwordHash STRING,
-  rol STRING, activo STRING, creadoEn STRING, creadoPor STRING
-) USING DELTA;
-
-CREATE TABLE IF NOT EXISTS main.gobernanza.sessions (
-  token STRING, userId STRING, expiraEn STRING, creadoEn STRING
+-- ---- Roles de usuario (SSO / Entra ID) ------------------------------------
+-- Con login nativo de Databricks (SSO) no guardamos contraseñas: la identidad
+-- (email/nombre) viene de Databricks. Aquí solo mapeamos email -> rol.
+CREATE TABLE IF NOT EXISTS main.gobernanza.user_roles (
+  email STRING, nombre STRING, rol STRING, creadoEn STRING, creadoPor STRING
 ) USING DELTA;
