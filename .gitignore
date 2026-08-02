@@ -1,9 +1,10 @@
 node_modules
-dist
-databricks/dist
+/dist
 .DS_Store
 *.local
 .env
 
 .vercel
 .databricks
+
+# databricks/dist SÍ se versiona: es el artefacto que sirve la Databricks App.
